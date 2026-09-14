@@ -57,7 +57,7 @@ export async function createSubject(name) {
 export async function fetchPapers(subjectId) {
   const { data: papers, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, subject_id')
+    .select('id, name, pass_mark, subject_id, time_limit_minutes')
     .eq('subject_id', subjectId)
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -77,14 +77,35 @@ export async function fetchPapers(subjectId) {
     name: p.name,
     passMark: p.pass_mark,
     subjectId: p.subject_id,
+    timeLimitMinutes: p.time_limit_minutes,
     questionCount: screenSets[p.id] ? screenSets[p.id].size : 0,
   }));
 }
 
-export async function createPaper({ subjectId, name, passMark }) {
+export async function fetchAllPapers() {
   const { data, error } = await supabase
     .from('papers')
-    .insert({ subject_id: subjectId, name, pass_mark: passMark })
+    .select('id, name, pass_mark, time_limit_minutes, subjects(name)')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data.map((p) => ({
+    id: p.id,
+    name: p.name,
+    passMark: p.pass_mark,
+    timeLimitMinutes: p.time_limit_minutes,
+    subjectName: p.subjects?.name,
+  }));
+}
+
+export async function deletePaper(paperId) {
+  const { error } = await supabase.from('papers').delete().eq('id', paperId);
+  if (error) throw error;
+}
+
+export async function createPaper({ subjectId, name, passMark, timeLimitMinutes }) {
+  const { data, error } = await supabase
+    .from('papers')
+    .insert({ subject_id: subjectId, name, pass_mark: passMark, time_limit_minutes: timeLimitMinutes || null })
     .select()
     .single();
   if (error) throw error;
@@ -121,6 +142,7 @@ export async function fetchPaperWithQuestions(paperId) {
     name: paper.name,
     passMark: paper.pass_mark,
     subjectId: paper.subject_id,
+    timeLimitMinutes: paper.time_limit_minutes,
     questions: questions.map((q) => ({
       id: q.id,
       type: q.type,

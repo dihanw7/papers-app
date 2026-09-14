@@ -161,6 +161,9 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .score-breakdown{display:flex; gap:10px; justify-content:center; margin-top:14px; flex-wrap:wrap;}
 .breakdown-chip{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:10px 16px; font-size:13px; color:var(--text2); text-align:center;}
 .breakdown-chip b{display:block; font-size:16px; color:var(--text); font-weight:700; margin-bottom:2px;}
+.timer-pill{font-variant-numeric:tabular-nums; font-weight:700; font-size:13px; padding:6px 14px; border-radius:980px; background:var(--surface); color:var(--text); border:1px solid var(--border);}
+.timer-pill.low{background:#fdefee; color:var(--danger); border-color:#f3c6c3;}
+.timeout-banner{background:#fff6e5; border:1px solid #f3d9a6; border-radius:var(--radius); padding:14px 18px; margin-bottom:16px; color:#a15c00; font-size:14px; font-weight:500;}
 @media (max-width:600px){
   h1{font-size:26px;} .wrap{padding:20px 16px 60px;} .qcard{padding:20px;}
   .nav{padding:12px 14px;} .nav .who{display:none;}

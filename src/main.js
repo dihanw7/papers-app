@@ -19,6 +19,9 @@ let state = {
   busy: false,
   analyticsSubject: null,
   analyticsPaper: null,
+  analyticsExpandedQ: null,
+  attemptDeadline: null,
+  timedOut: false,
 };
 
 function esc(s) {
@@ -64,6 +67,78 @@ function groupConsecutive(list) {
     }
   }
   return out;
+}
+
+// ---------- Timed papers ----------
+let countdownTimer = null;
+function timerStorageKey(paperId) { return 'papers_attempt_start_' + paperId + '_' + state.currentUser.id; }
+function clearCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+function computeScore() {
+  let totalPoints = 0, totalPossible = 0;
+  state.screens.forEach(screen => {
+    if (screen.kind === 'single') {
+      totalPossible += 1;
+      if (state.attemptAnswers[screen.question.id] === screen.question.correct) totalPoints += 1;
+    } else {
+      const n = screen.items.length;
+      totalPossible += n;
+      let correct = 0, wrong = 0;
+      screen.items.forEach(q => {
+        const ans = state.attemptAnswers[q.id];
+        if (!ans) return;
+        if (ans === q.correct) correct++; else wrong++;
+      });
+      totalPoints += Math.max(0, Math.min(n, correct - wrong));
+    }
+  });
+  return { totalPoints, totalPossible };
+}
+async function finalizeSubmit(timedOut) {
+  clearCountdown();
+  localStorage.removeItem(timerStorageKey(state.selectedPaper));
+  const { totalPoints, totalPossible } = computeScore();
+  state.busy = true; render();
+  const attempt = await db.submitAttempt({
+    paperId: state.selectedPaper, userId: state.currentUser.id,
+    answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
+  });
+  state.busy = false;
+  state.timedOut = timedOut;
+  await buildReview(state.selectedPaper, {
+    score: attempt.score, total: attempt.total, answers: attempt.answers, submittedAt: attempt.submitted_at,
+  });
+  render();
+}
+function autoSubmitOnTimeout() {
+  if (state.screen !== 'take') return;
+  finalizeSubmit(true);
+}
+function startCountdownIfNeeded() {
+  clearCountdown();
+  const paper = state.paperDetail;
+  if (!paper.timeLimitMinutes) { state.attemptDeadline = null; return; }
+  const key = timerStorageKey(paper.id);
+  let startedAt = localStorage.getItem(key);
+  if (!startedAt) {
+    startedAt = Date.now().toString();
+    localStorage.setItem(key, startedAt);
+  }
+  state.attemptDeadline = parseInt(startedAt, 10) + paper.timeLimitMinutes * 60000;
+  if (Date.now() >= state.attemptDeadline) {
+    autoSubmitOnTimeout();
+    return;
+  }
+  countdownTimer = setInterval(() => {
+    if (state.screen !== 'take') { clearCountdown(); return; }
+    if (Date.now() >= state.attemptDeadline) { autoSubmitOnTimeout(); }
+    else { render(); }
+  }, 1000);
 }
 
 async function boot() {
@@ -175,6 +250,7 @@ window.openPaper = async function (paperId) {
     state.attemptAnswers = {};
     state.attemptIndex = 0;
     state.screen = 'take';
+    startCountdownIfNeeded();
   }
   render();
 };
@@ -197,38 +273,7 @@ window.submitPaper = async function () {
     ? unanswered + ' item(s) unanswered. Submit anyway? You will not be able to change answers after this.'
     : 'Submit paper? You will not be able to change your answers after this.';
   if (!confirm(msg)) return;
-
-  let totalPoints = 0, totalPossible = 0;
-  state.screens.forEach(screen => {
-    if (screen.kind === 'single') {
-      totalPossible += 1;
-      if (state.attemptAnswers[screen.question.id] === screen.question.correct) totalPoints += 1;
-    } else {
-      const n = screen.items.length;
-      totalPossible += n;
-      let correct = 0, wrong = 0;
-      screen.items.forEach(q => {
-        const ans = state.attemptAnswers[q.id];
-        if (!ans) return;
-        if (ans === q.correct) correct++; else wrong++;
-      });
-      // Contained negative marking: +1 correct, -1 wrong, floored at 0 and
-      // capped at the number of statements — never drags the rest of the
-      // paper down, and never goes negative for the student.
-      totalPoints += Math.max(0, Math.min(n, correct - wrong));
-    }
-  });
-
-  state.busy = true; render();
-  const attempt = await db.submitAttempt({
-    paperId: state.selectedPaper, userId: state.currentUser.id,
-    answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
-  });
-  state.busy = false;
-  await buildReview(state.selectedPaper, {
-    score: attempt.score, total: attempt.total, answers: attempt.answers, submittedAt: attempt.submitted_at,
-  });
-  render();
+  await finalizeSubmit(false);
 };
 
 async function buildReview(paperId, attempt) {
@@ -300,6 +345,8 @@ window.saveNewPaper = async function () {
   const subjectId = document.getElementById('np_subject').value;
   const name = document.getElementById('np_name').value.trim();
   const passMark = parseInt(document.getElementById('np_pass').value || '50');
+  const timeLimitRaw = document.getElementById('np_timelimit').value.trim();
+  const timeLimitMinutes = timeLimitRaw ? parseInt(timeLimitRaw) : null;
   if (!subjectId || !name) { alert('Choose a subject and give the paper a name.'); return; }
   if (state.newPaperQuestions.length === 0) { alert('Add at least one question.'); return; }
   for (const q of state.newPaperQuestions) {
@@ -325,7 +372,7 @@ window.saveNewPaper = async function () {
   });
   state.busy = true; render();
   try {
-    const paper = await db.createPaper({ subjectId, name, passMark });
+    const paper = await db.createPaper({ subjectId, name, passMark, timeLimitMinutes });
     await db.addQuestions(paper.id, state.newPaperQuestions);
     state.busy = false;
     alert('Paper saved.');
@@ -413,13 +460,18 @@ window.handleExcelUpload = function (evt) {
 };
 
 // ---------- ANALYTICS ----------
+let analyticsCache = null; // { paperId, paper, all, dist }
 window.setAnalyticsSubject = async function (subjId) {
   state.analyticsSubject = subjId;
   state.analyticsPaper = null;
   state.papers = subjId ? await db.fetchPapers(subjId) : [];
   render();
 };
-window.setAnalyticsPaper = async function (paperId) { state.analyticsPaper = paperId; render(); };
+window.setAnalyticsPaper = async function (paperId) { state.analyticsPaper = paperId; state.analyticsExpandedQ = null; render(); };
+window.toggleQuestionDetail = function (qid) {
+  state.analyticsExpandedQ = state.analyticsExpandedQ === qid ? null : qid;
+  render();
+};
 
 // ================= RENDER =================
 function render() {
@@ -430,6 +482,7 @@ function render() {
   if (state.screen === 'review') { renderReviewDeferred(); }
   if (state.screen === 'analytics') { renderAnalyticsDeferred(); }
   if (state.screen === 'admin' && state.adminTab === 'analytics') { renderAnalyticsDeferred(); }
+  if (state.screen === 'admin' && state.adminTab === 'papers') { renderAdminPapersDeferred(); }
 }
 
 function renderFooter() {
@@ -508,7 +561,7 @@ function renderPapers() {
     + '<p class="sub">Choose a paper to begin.</p>'
     + (state.papers.length === 0 ? '<div class="empty"><div class="dot"></div>No papers in this subject yet.</div>' :
       '<div class="grid">' + state.papers.map(p =>
-        '<div class="tile" onclick="openPaper(\'' + p.id + '\')">' + swatchFor(p.name) + '<div class="t">' + esc(p.name) + '</div><div class="d">' + p.questionCount + ' questions · pass ' + p.passMark + '%</div></div>'
+        '<div class="tile" onclick="openPaper(\'' + p.id + '\')">' + swatchFor(p.name) + '<div class="t">' + esc(p.name) + '</div><div class="d">' + p.questionCount + ' questions · pass ' + p.passMark + '%' + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min' : '') + '</div></div>'
       ).join('') + '</div>');
 }
 
@@ -547,7 +600,11 @@ function renderTake() {
       }).join('');
   }
 
-  return '<div class="flex-between"><h2>' + esc(state.paperDetail.name) + '</h2><span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span></div>'
+  return '<div class="flex-between"><h2>' + esc(state.paperDetail.name) + '</h2>'
+    + '<div class="row" style="gap:10px; align-items:center;">'
+    + (state.paperDetail.timeLimitMinutes && state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - Date.now()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - Date.now()) + '</span>' : '')
+    + '<span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span>'
+    + '</div></div>'
     + '<div class="progressbar"><div class="progressfill" style="width:' + ((i + 1) / screens.length * 100) + '%"></div></div>'
     + '<div class="' + (screen.kind === 'group' ? 'group-card' : 'qcard') + '">'
     + body
@@ -588,6 +645,10 @@ function renderReviewDeferred() {
   });
 
   let html = '<div class="flex-between"><h2>' + esc(paper.name) + ' — results</h2><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>';
+  if (state.timedOut) {
+    html += '<div class="timeout-banner">Time ran out — your answers were submitted automatically.</div>';
+    state.timedOut = false;
+  }
   html += '<div class="card" style="text-align:center;">'
     + '<div class="scorecircle" style="border-color:' + (passed ? '#c9f0d3' : '#fbdcda') + ';">'
     + '<div class="n">' + pct + '%</div><div class="l">' + attempt.score + ' / ' + attempt.total + '</div></div>'
@@ -708,9 +769,18 @@ function renderAnalyticsPaperSelect() {
 async function renderAnalyticsResult() {
   const resHost = document.getElementById('analyticsresult');
   if (!resHost) return;
-  resHost.innerHTML = 'Loading…';
-  const paper = await db.fetchPaperWithQuestions(state.analyticsPaper);
-  const all = await db.fetchAllAttempts(state.analyticsPaper);
+  let paper, all, dist;
+  if (analyticsCache && analyticsCache.paperId === state.analyticsPaper) {
+    ({ paper, all, dist } = analyticsCache);
+  } else {
+    resHost.innerHTML = 'Loading…';
+    paper = await db.fetchPaperWithQuestions(state.analyticsPaper);
+    all = await db.fetchAllAttempts(state.analyticsPaper);
+    dist = {};
+    paper.questions.forEach(q => { dist[q.id] = {}; q.options.forEach(o => dist[q.id][o.key] = 0); });
+    all.forEach(a => { paper.questions.forEach(q => { const ans = a.answers[q.id]; if (ans && dist[q.id][ans] !== undefined) dist[q.id][ans]++; }); });
+    analyticsCache = { paperId: state.analyticsPaper, paper, all, dist };
+  }
   if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>'; return; }
   all.sort((a, b) => b.score - a.score);
   const isAdmin = state.currentUser.role === 'admin';
@@ -727,22 +797,64 @@ async function renderAnalyticsResult() {
     let correctCount = 0;
     all.forEach(a => { if (a.answers[q.id] === q.correct) correctCount++; });
     const label = q.groupStem ? (q.groupStem + ' — ' + q.stem) : q.stem;
-    return { label, pct: Math.round(correctCount / all.length * 100) };
+    return { id: q.id, q, label, pct: Math.round(correctCount / all.length * 100) };
   }).sort((a, b) => a.pct - b.pct);
-  html += '<div class="card"><h2>Question difficulty</h2><p class="sub">Ranked hardest first, by % who got it right. MTF statements are ranked individually.</p>';
+  html += '<div class="card"><h2>Question difficulty</h2><p class="sub">Ranked hardest first, by % who got it right. Click a question to see it in full. MTF statements are ranked individually.</p>';
   stats.forEach((s, idx) => {
-    html += '<div class="row" style="align-items:center; margin-bottom:10px;">'
+    const expanded = state.analyticsExpandedQ === s.id;
+    html += '<div class="row" style="align-items:center; margin-bottom:6px; cursor:pointer;" onclick="toggleQuestionDetail(\'' + s.id + '\')">'
       + '<div style="width:40px; font-weight:600; color:var(--text2); font-size:13px;">' + (idx + 1) + '</div>'
       + '<div style="flex:1;"><div style="font-size:14px;">' + esc(s.label.slice(0, 100)) + (s.label.length > 100 ? '…' : '') + '</div>'
       + '<div class="bar-track"><div class="bar-fill" style="width:' + s.pct + '%; background:' + (s.pct < 50 ? '#d93025' : (s.pct < 75 ? '#f2a900' : '#34c759')) + ';"></div></div></div>'
       + '<div style="width:50px; text-align:right; font-weight:600; font-size:13px;">' + s.pct + '%</div>'
       + '</div>';
+    if (expanded) {
+      html += renderExpandedQuestionDetail(s.q, dist, all.length);
+    }
   });
   html += '</div>';
   resHost.innerHTML = html;
 }
 
+function renderExpandedQuestionDetail(q, dist, allCount) {
+  let html = '<div class="card" style="margin:2px 0 18px; background:var(--surface);">';
+  if (q.groupStem) html += '<p class="sub" style="margin:0 0 10px;">Part of: ' + esc(q.groupStem) + '</p>';
+  html += '<div class="qstem" style="font-size:16px; margin-bottom:14px;">' + esc(q.stem) + '</div>';
+  html += q.options.map(o => {
+    const count = (dist[q.id] && dist[q.id][o.key]) || 0;
+    const p = allCount > 0 ? Math.round(count / allCount * 100) : 0;
+    const cls = o.key === q.correct ? 'correct' : '';
+    return '<div class="opt ' + cls + '"><div class="key">' + o.key + '</div><div class="txt">' + esc(o.text)
+      + '<div class="bar-track"><div class="bar-fill" style="width:' + p + '%; background:' + (o.key === q.correct ? '#34c759' : '#c7c7cc') + ';"></div></div></div>'
+      + '<div class="pct">' + p + '%</div></div>';
+  }).join('');
+  html += '</div>';
+  return html;
+}
+
 // ---------- ADMIN ----------
+// ---------- ADMIN: paper list / delete ----------
+async function renderAdminPapersDeferred() {
+  const host = document.getElementById('alladminpapers');
+  if (!host) return;
+  const papers = await db.fetchAllPapers();
+  if (papers.length === 0) { host.innerHTML = '<p class="sub" style="margin:0;">No papers created yet.</p>'; return; }
+  host.innerHTML = papers.map(p =>
+    '<div class="flex-between" style="padding:10px 0; border-bottom:1px solid #ececef;">'
+    + '<div><div style="font-weight:600; font-size:14px;">' + esc(p.name) + '</div>'
+    + '<div class="sub" style="margin:0;">' + esc(p.subjectName || '—') + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min limit' : '') + '</div></div>'
+    + '<button class="btn danger" onclick="deletePaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Delete</button>'
+    + '</div>'
+  ).join('');
+}
+window.deletePaperConfirm = async function (paperId, paperName) {
+  if (!confirm('Delete "' + paperName + '"? This permanently removes all its questions and every student\'s attempt at it. This cannot be undone.')) return;
+  try {
+    await db.deletePaper(paperId);
+    renderAdminPapersDeferred();
+  } catch (e) { alert(e.message); }
+};
+
 function renderAdmin() {
   let html = '<h1>Admin</h1>'
     + '<div class="tabbar">'
@@ -755,7 +867,8 @@ function renderAdmin() {
       + (state.subjects.length ? '<p class="sub">Existing: ' + state.subjects.map(s => esc(s.name)).join(', ') + '</p>' : '')
       + '</div>'
       + '<div class="card"><div class="flex-between"><h2>Papers</h2><button class="btn" onclick="startNewPaper()">+ New paper</button></div>'
-      + '<p class="sub">Create a new paper manually or import questions from an Excel sheet.</p></div>';
+      + '<p class="sub">Create a new paper manually or import questions from an Excel sheet.</p></div>'
+      + '<div class="card"><h2>All papers</h2><div id="alladminpapers">Loading…</div></div>';
   } else {
     html += '<div id="analyticshost">Loading…</div>';
   }
@@ -770,6 +883,7 @@ function renderNewPaper() {
     + '</select>'
     + '<label class="flabel">Paper name</label><input id="np_name" placeholder="e.g. Mock 01">'
     + '<label class="flabel">Pass mark (%)</label><input id="np_pass" type="number" value="50">'
+    + '<label class="flabel">Time limit in minutes (optional — leave blank for no limit)</label><input id="np_timelimit" type="number" placeholder="e.g. 60">'
     + '</div>'
     + '<div class="card"><h2>Import from Excel</h2>'
     + '<p class="sub">Columns: <b>Type</b> (SBA, TF, or MTF), <b>Stem</b>, <b>Statement</b> (MTF only — one row per statement, same Stem repeated for the whole group), <b>OptionA</b>–<b>OptionE</b> (SBA only), <b>Correct</b> (a letter for SBA, or True/False for TF and MTF rows).</p>'
