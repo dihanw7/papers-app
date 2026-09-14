@@ -536,17 +536,31 @@ function renderFooter() {
   return '<div class="footer-note">Signed in as ' + esc(state.currentUser ? state.currentUser.name : '') + '</div>';
 }
 
+const ICONS = {
+  subjects: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg>',
+  analytics: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M12 20V4"/><path d="M20 20v-7"/></svg>',
+  admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  signout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+};
+
 function renderNav() {
   const u = state.currentUser;
-  let tabs = [['home', 'Subjects'], ['analytics', 'Analytics']];
-  if (u && u.role === 'admin') tabs.push(['admin', 'Admin']);
+  let tabs = [['home', 'Subjects', 'subjects'], ['analytics', 'Analytics', 'analytics']];
+  if (u && u.role === 'admin') tabs.push(['admin', 'Admin', 'admin']);
   return '<div class="nav">'
     + '<div class="brand" onclick="goto(\'home\')">Papers</div>'
-    + '<div class="links">'
+    + '<div class="links nav-desktop-links">'
     + tabs.map(t => '<button class="linkbtn ' + (state.screen === t[0] ? 'active' : '') + '" onclick="goto(\'' + t[0] + '\')">' + t[1] + '</button>').join('')
     + '<span class="who">' + esc(u.name) + ' · ' + esc(u.medNo) + '</span>'
     + '<button class="linkbtn" onclick="doLogout()">Sign out</button>'
-    + '</div></div>';
+    + '</div>'
+    + '<div class="nav-mobile-actions">'
+    + '<button class="icon-btn" onclick="doLogout()" aria-label="Sign out">' + ICONS.signout + '</button>'
+    + '</div>'
+    + '</div>'
+    + '<nav class="bottom-tabbar">'
+    + tabs.map(t => '<button class="tab-item ' + (state.screen === t[0] ? 'active' : '') + '" onclick="goto(\'' + t[0] + '\')">' + ICONS[t[2]] + '<span>' + t[1] + '</span></button>').join('')
+    + '</nav>';
 }
 
 function renderScreen() {
