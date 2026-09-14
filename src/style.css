@@ -167,7 +167,7 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 @media (max-width:600px){
   h1{font-size:26px;} .wrap{padding:20px 16px 100px;} .qcard{padding:20px;}
   .nav{padding:12px 16px;}
-  .nav-desktop-links{display:none;}
+  .nav .nav-desktop-links{display:none;}
   .nav-mobile-actions{display:flex; align-items:center;}
   .bottom-tabbar{display:flex;}
   .center-wrap{padding-bottom:40px;}
