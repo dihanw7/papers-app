@@ -23,6 +23,7 @@ let state = {
   attemptDeadline: null,
   timedOut: false,
   draftStatus: 'idle', // idle | saving | saved
+  settings: { groups: [], batches: [] },
 };
 
 function esc(s) {
@@ -168,11 +169,16 @@ function startCountdownIfNeeded() {
 }
 
 async function boot() {
+  try {
+    state.settings = await db.fetchSettings();
+  } catch (e) {
+    state.settings = { groups: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'], batches: ['30', '31', '32', '33', '34'] };
+  }
   const session = await db.getSession();
   if (session) {
     try {
       const profile = await db.fetchMyProfile(session.user.id);
-      state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role };
+      state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role, batch: profile.batch };
       state.screen = 'home';
       state.subjects = await db.fetchSubjects();
     } catch (e) {
@@ -188,14 +194,15 @@ boot();
 // ---------- AUTH ----------
 window.doSignup = async function () {
   const name = document.getElementById('su_name').value.trim();
-  const group = document.getElementById('su_group').value.trim();
+  const group = document.getElementById('su_group').value;
+  const batch = document.getElementById('su_batch').value;
   const med = document.getElementById('su_med').value.trim().toUpperCase();
   const pass = document.getElementById('su_pass').value;
-  if (!name || !group || !med || !pass) { state.errorMsg = 'Please fill in every field.'; render(); return; }
+  if (!name || !group || !batch || !med || !pass) { state.errorMsg = 'Please fill in every field.'; render(); return; }
   if (pass.length < 6) { state.errorMsg = 'Password must be at least 6 characters.'; render(); return; }
   state.busy = true; state.errorMsg = ''; render();
   try {
-    const result = await db.signUp({ name, group, medNo: med, password: pass });
+    const result = await db.signUp({ name, group, medNo: med, password: pass, batch });
     if (!result.session) {
       state.busy = false;
       state.errorMsg = 'Account created. If your admin has email confirmation turned on, ask them to disable it — otherwise try logging in now.';
@@ -204,7 +211,7 @@ window.doSignup = async function () {
       return;
     }
     const profile = await db.fetchMyProfile(result.user.id);
-    state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role };
+    state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role, batch: profile.batch };
     state.subjects = await db.fetchSubjects();
     state.busy = false;
     state.screen = 'home';
@@ -224,7 +231,7 @@ window.doLogin = async function () {
   try {
     const result = await db.logIn({ medNo: med, password: pass });
     const profile = await db.fetchMyProfile(result.user.id);
-    state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role };
+    state.currentUser = { id: profile.id, name: profile.name, group: profile.group, medNo: profile.med_no, role: profile.role, batch: profile.batch };
     state.subjects = await db.fetchSubjects();
     state.busy = false;
     state.screen = 'home';
@@ -319,6 +326,17 @@ async function buildReview(paperId, attempt) {
 
 // ---------- ADMIN: subjects / papers ----------
 window.setAdminTab = function (t) { state.adminTab = t; render(); };
+
+window.saveSettings = async function () {
+  const groups = document.getElementById('settings_groups').value.split(',').map(s => s.trim()).filter(Boolean);
+  const batches = document.getElementById('settings_batches').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (groups.length === 0 || batches.length === 0) { alert('Add at least one group and one batch.'); return; }
+  try {
+    await db.updateSettings({ groups, batches });
+    state.settings = { groups, batches };
+    alert('Saved. New sign-ups will see the updated lists.');
+  } catch (e) { alert(e.message); }
+};
 
 window.createSubject = async function () {
   const val = document.getElementById('newsubject').value.trim();
@@ -561,14 +579,17 @@ function renderAuth() {
     + '</div></div>';
 }
 function renderLoginForm() {
-  return '<label class="flabel">MED number</label><input id="li_med" placeholder="e.g. MED1234" autocapitalize="characters">'
+  return '<label class="flabel">MED number</label><input id="li_med" placeholder="e.g. 4892" autocapitalize="characters">'
     + '<label class="flabel">Password</label><input id="li_pass" type="password" placeholder="Password">'
     + '<button class="btn block" onclick="doLogin()" ' + (state.busy ? 'disabled' : '') + '>' + (state.busy ? 'Logging in…' : 'Log in') + '</button>';
 }
 function renderSignupForm() {
-  return '<label class="flabel">Full name</label><input id="su_name" placeholder="Jane Smith">'
-    + '<label class="flabel">Group</label><input id="su_group" placeholder="e.g. Group 3B">'
-    + '<label class="flabel">MED number</label><input id="su_med" placeholder="e.g. MED1234" autocapitalize="characters">'
+  const groups = state.settings.groups.length ? state.settings.groups : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+  const batches = state.settings.batches.length ? state.settings.batches : ['30', '31', '32', '33', '34'];
+  return '<label class="flabel">Name</label><input id="su_name" placeholder="e.g. Saman">'
+    + '<label class="flabel">Group</label><select id="su_group">' + groups.map(g => '<option value="' + esc(g) + '">' + esc(g) + '</option>').join('') + '</select>'
+    + '<label class="flabel">Batch</label><select id="su_batch">' + batches.map(b => '<option value="' + esc(b) + '">' + esc(b) + '</option>').join('') + '</select>'
+    + '<label class="flabel">MED number</label><input id="su_med" placeholder="e.g. 4892" autocapitalize="characters">'
     + '<label class="flabel">Set a password</label><input id="su_pass" type="password" placeholder="At least 6 characters">'
     + '<button class="btn block" onclick="doSignup()" ' + (state.busy ? 'disabled' : '') + '>' + (state.busy ? 'Creating account…' : 'Create account') + '</button>';
 }
@@ -897,6 +918,12 @@ function renderAdmin() {
     + '<button class="' + (state.adminTab === 'analytics' ? 'active' : '') + '" onclick="setAdminTab(\'analytics\')">Analytics</button>'
     + '</div>';
   if (state.adminTab === 'papers') {
+    html += '<div class="card"><h2>Sign-up options</h2>'
+      + '<p class="sub">Comma-separated. These drive the Group and Batch dropdowns on the sign-up form.</p>'
+      + '<label class="flabel">Groups</label><input id="settings_groups" value="' + esc((state.settings.groups || []).join(', ')) + '">'
+      + '<label class="flabel">Batches</label><input id="settings_batches" value="' + esc((state.settings.batches || []).join(', ')) + '">'
+      + '<button class="btn" onclick="saveSettings()">Save</button>'
+      + '</div>';
     html += '<div class="card"><h2>Subjects</h2>'
       + '<div class="row"><input id="newsubject" placeholder="e.g. Surgery" style="flex:1;"><button class="btn" onclick="createSubject()">Add</button></div>'
       + (state.subjects.length ? '<div style="margin-top:14px;">' + state.subjects.map(s =>

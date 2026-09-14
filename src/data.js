@@ -1,12 +1,24 @@
 import { supabase, medNoToEmail } from './supabaseClient.js';
 
+// ---------- SETTINGS (drives sign-up form dropdowns) ----------
+export async function fetchSettings() {
+  const { data, error } = await supabase.from('app_settings').select('groups, batches').eq('id', true).single();
+  if (error) throw error;
+  return { groups: data.groups || [], batches: data.batches || [] };
+}
+
+export async function updateSettings({ groups, batches }) {
+  const { error } = await supabase.from('app_settings').update({ groups, batches }).eq('id', true);
+  if (error) throw error;
+}
+
 // ---------- AUTH ----------
-export async function signUp({ name, group, medNo, password }) {
+export async function signUp({ name, group, medNo, password, batch }) {
   const email = medNoToEmail(medNo);
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { name, group, med_no: medNo.toUpperCase() } },
+    options: { data: { name, group, med_no: medNo.toUpperCase(), batch } },
   });
   if (error) throw error;
   // If email confirmation is enabled in the Supabase project, data.session
