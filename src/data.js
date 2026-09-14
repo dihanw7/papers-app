@@ -53,6 +53,17 @@ export async function createSubject(name) {
   return data;
 }
 
+export async function fetchAllSubjects() {
+  const { data, error } = await supabase.from('subjects').select('id, name').order('name');
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteSubject(subjectId) {
+  const { error } = await supabase.from('subjects').delete().eq('id', subjectId);
+  if (error) throw error;
+}
+
 // ---------- PAPERS ----------
 export async function fetchPapers(subjectId) {
   const { data: papers, error } = await supabase
@@ -154,6 +165,30 @@ export async function fetchPaperWithQuestions(paperId) {
       groupOrder: q.group_order,
     })),
   };
+}
+
+// ---------- DRAFT ATTEMPTS (autosave) ----------
+export async function fetchDraft(paperId, userId) {
+  const { data, error } = await supabase
+    .from('draft_attempts')
+    .select('*')
+    .eq('paper_id', paperId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function saveDraft(paperId, userId, answers) {
+  const { error } = await supabase
+    .from('draft_attempts')
+    .upsert({ paper_id: paperId, user_id: userId, answers, updated_at: new Date().toISOString() }, { onConflict: 'paper_id,user_id' });
+  if (error) throw error;
+}
+
+export async function deleteDraft(paperId, userId) {
+  const { error } = await supabase.from('draft_attempts').delete().eq('paper_id', paperId).eq('user_id', userId);
+  if (error) throw error;
 }
 
 // ---------- ATTEMPTS ----------

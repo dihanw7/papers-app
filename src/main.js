@@ -22,6 +22,7 @@ let state = {
   analyticsExpandedQ: null,
   attemptDeadline: null,
   timedOut: false,
+  draftStatus: 'idle', // idle | saving | saved
 };
 
 function esc(s) {
@@ -71,6 +72,20 @@ function groupConsecutive(list) {
 
 // ---------- Timed papers ----------
 let countdownTimer = null;
+let draftSaveTimeout = null;
+function scheduleDraftSave() {
+  if (!state.selectedPaper || !state.currentUser) return;
+  state.draftStatus = 'saving';
+  clearTimeout(draftSaveTimeout);
+  draftSaveTimeout = setTimeout(async () => {
+    try {
+      await db.saveDraft(state.selectedPaper, state.currentUser.id, state.attemptAnswers);
+      if (state.screen === 'take') { state.draftStatus = 'saved'; render(); }
+    } catch (e) {
+      if (state.screen === 'take') { state.draftStatus = 'idle'; render(); }
+    }
+  }, 700);
+}
 function timerStorageKey(paperId) { return 'papers_attempt_start_' + paperId + '_' + state.currentUser.id; }
 function clearCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
 function formatCountdown(ms) {
@@ -101,6 +116,7 @@ function computeScore() {
 }
 async function finalizeSubmit(timedOut) {
   clearCountdown();
+  clearTimeout(draftSaveTimeout);
   localStorage.removeItem(timerStorageKey(state.selectedPaper));
   const { totalPoints, totalPossible } = computeScore();
   state.busy = true; render();
@@ -108,6 +124,7 @@ async function finalizeSubmit(timedOut) {
     paperId: state.selectedPaper, userId: state.currentUser.id,
     answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
   });
+  try { await db.deleteDraft(state.selectedPaper, state.currentUser.id); } catch (e) { /* non-fatal */ }
   state.busy = false;
   state.timedOut = timedOut;
   await buildReview(state.selectedPaper, {
@@ -247,9 +264,11 @@ window.openPaper = async function (paperId) {
       answers: existingAttempt.answers, submittedAt: existingAttempt.submitted_at,
     });
   } else {
-    state.attemptAnswers = {};
+    const draft = await db.fetchDraft(paperId, state.currentUser.id);
+    state.attemptAnswers = (draft && draft.answers) ? draft.answers : {};
     state.attemptIndex = 0;
     state.screen = 'take';
+    state.draftStatus = 'idle';
     startCountdownIfNeeded();
   }
   render();
@@ -259,6 +278,7 @@ window.openPaper = async function (paperId) {
 window.selectAnswer = function (qid, key) {
   if (state.attemptAnswers[qid] === key) { delete state.attemptAnswers[qid]; }
   else { state.attemptAnswers[qid] = key; }
+  scheduleDraftSave();
   render();
 };
 window.gotoQIndex = function (i) { state.attemptIndex = i; render(); };
@@ -603,6 +623,7 @@ function renderTake() {
   return '<div class="flex-between"><h2>' + esc(state.paperDetail.name) + '</h2>'
     + '<div class="row" style="gap:10px; align-items:center;">'
     + (state.paperDetail.timeLimitMinutes && state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - Date.now()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - Date.now()) + '</span>' : '')
+    + (state.draftStatus === 'saving' ? '<span style="font-size:12px;color:var(--text2);">Saving…</span>' : (state.draftStatus === 'saved' ? '<span style="font-size:12px;color:var(--text2);">Saved</span>' : ''))
     + '<span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span>'
     + '</div></div>'
     + '<div class="progressbar"><div class="progressfill" style="width:' + ((i + 1) / screens.length * 100) + '%"></div></div>'
@@ -854,6 +875,15 @@ window.deletePaperConfirm = async function (paperId, paperName) {
     renderAdminPapersDeferred();
   } catch (e) { alert(e.message); }
 };
+window.deleteSubjectConfirm = async function (subjectId, subjectName) {
+  if (!confirm('Delete "' + subjectName + '"? This permanently removes every paper, question, and student attempt under this subject. This cannot be undone.')) return;
+  try {
+    await db.deleteSubject(subjectId);
+    state.subjects = await db.fetchSubjects();
+    render();
+    renderAdminPapersDeferred();
+  } catch (e) { alert(e.message); }
+};
 
 function renderAdmin() {
   let html = '<h1>Admin</h1>'
@@ -862,9 +892,14 @@ function renderAdmin() {
     + '<button class="' + (state.adminTab === 'analytics' ? 'active' : '') + '" onclick="setAdminTab(\'analytics\')">Analytics</button>'
     + '</div>';
   if (state.adminTab === 'papers') {
-    html += '<div class="card"><h2>Add a subject</h2>'
+    html += '<div class="card"><h2>Subjects</h2>'
       + '<div class="row"><input id="newsubject" placeholder="e.g. Surgery" style="flex:1;"><button class="btn" onclick="createSubject()">Add</button></div>'
-      + (state.subjects.length ? '<p class="sub">Existing: ' + state.subjects.map(s => esc(s.name)).join(', ') + '</p>' : '')
+      + (state.subjects.length ? '<div style="margin-top:14px;">' + state.subjects.map(s =>
+          '<div class="flex-between" style="padding:8px 0; border-bottom:1px solid #ececef;">'
+          + '<span style="font-size:14px;">' + esc(s.name) + '</span>'
+          + '<button class="btn danger" onclick="deleteSubjectConfirm(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">Delete</button>'
+          + '</div>'
+        ).join('') + '</div>' : '')
       + '</div>'
       + '<div class="card"><div class="flex-between"><h2>Papers</h2><button class="btn" onclick="startNewPaper()">+ New paper</button></div>'
       + '<p class="sub">Create a new paper manually or import questions from an Excel sheet.</p></div>'
