@@ -94,23 +94,32 @@ function formatCountdown(ms) {
   const s = total % 60;
   return m + ':' + String(s).padStart(2, '0');
 }
+const SBA_MARKS = 5;
+const TF_MARKS = 1; // standalone TF (not part of an MTF group) — rare in practice
+const MTF_MAX_MARKS = 5; // fixed cap per MTF group, regardless of how many statements it has
+
+function screenMaxMarks(screen) {
+  if (screen.kind === 'single') return screen.question.type === 'SBA' ? SBA_MARKS : TF_MARKS;
+  return MTF_MAX_MARKS;
+}
+function screenEarnedMarks(screen, answers) {
+  if (screen.kind === 'single') {
+    const max = screenMaxMarks(screen);
+    return answers[screen.question.id] === screen.question.correct ? max : 0;
+  }
+  let correct = 0, wrong = 0;
+  screen.items.forEach(q => {
+    const ans = answers[q.id];
+    if (!ans) return;
+    if (ans === q.correct) correct++; else wrong++;
+  });
+  return Math.max(0, Math.min(MTF_MAX_MARKS, correct - wrong));
+}
 function computeScore() {
   let totalPoints = 0, totalPossible = 0;
   state.screens.forEach(screen => {
-    if (screen.kind === 'single') {
-      totalPossible += 1;
-      if (state.attemptAnswers[screen.question.id] === screen.question.correct) totalPoints += 1;
-    } else {
-      const n = screen.items.length;
-      totalPossible += n;
-      let correct = 0, wrong = 0;
-      screen.items.forEach(q => {
-        const ans = state.attemptAnswers[q.id];
-        if (!ans) return;
-        if (ans === q.correct) correct++; else wrong++;
-      });
-      totalPoints += Math.max(0, Math.min(n, correct - wrong));
-    }
+    totalPossible += screenMaxMarks(screen);
+    totalPoints += screenEarnedMarks(screen, state.attemptAnswers);
   });
   return { totalPoints, totalPossible };
 }
@@ -653,15 +662,14 @@ function renderReviewDeferred() {
 
   let singleCorrect = 0, singleTotal = 0, mtfNet = 0, mtfTotal = 0;
   state.screens.forEach(screen => {
+    const max = screenMaxMarks(screen);
+    const earned = screenEarnedMarks(screen, attempt.answers);
     if (screen.kind === 'single') {
-      singleTotal += 1;
-      if (attempt.answers[screen.question.id] === screen.question.correct) singleCorrect += 1;
+      singleTotal += max;
+      singleCorrect += earned;
     } else {
-      const n = screen.items.length;
-      mtfTotal += n;
-      let c = 0, w = 0;
-      screen.items.forEach(q => { const a = attempt.answers[q.id]; if (!a) return; if (a === q.correct) c++; else w++; });
-      mtfNet += Math.max(0, Math.min(n, c - w));
+      mtfTotal += max;
+      mtfNet += earned;
     }
   });
 
@@ -688,11 +696,9 @@ function renderReviewDeferred() {
     if (screen.kind === 'single') {
       cls = attempt.answers[screen.question.id] === screen.question.correct ? 'correct' : 'wrong';
     } else {
-      const n = screen.items.length;
-      let c = 0, w = 0;
-      screen.items.forEach(q => { const a = attempt.answers[q.id]; if (!a) return; if (a === q.correct) c++; else w++; });
-      const net = Math.max(0, Math.min(n, c - w));
-      cls = net === n ? 'correct' : (net === 0 ? 'wrong' : '');
+      const net = screenEarnedMarks(screen, attempt.answers);
+      const max = screenMaxMarks(screen);
+      cls = net === max ? 'correct' : (net === 0 ? 'wrong' : '');
     }
     return '<div class="qdot ' + cls + '" onclick="document.getElementById(\'rq_' + idx + '\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">' + (idx + 1) + '</div>';
   }).join('') + '</div>';
@@ -729,13 +735,12 @@ function renderReviewDeferred() {
       html += '</div>';
     } else {
       const n = screen.items.length;
-      let c = 0, w = 0;
-      screen.items.forEach(q => { const a = attempt.answers[q.id]; if (!a) return; if (a === q.correct) c++; else w++; });
-      const net = Math.max(0, Math.min(n, c - w));
-      const netClass = net === n ? 'good' : (net === 0 ? 'low' : 'mid');
+      const net = screenEarnedMarks(screen, attempt.answers);
+      const max = screenMaxMarks(screen);
+      const netClass = net === max ? 'good' : (net === 0 ? 'low' : 'mid');
       html += '<div class="group-card" id="rq_' + idx + '" style="margin-bottom:14px;">'
         + '<div class="flex-between"><div class="qmeta" style="margin-bottom:0;">Question ' + (idx + 1) + ' · MTF · ' + n + ' statements</div>'
-        + '<span class="net-score-pill ' + netClass + '">Net ' + net + ' / ' + n + '</span></div>'
+        + '<span class="net-score-pill ' + netClass + '">Net ' + net + ' / ' + max + '</span></div>'
         + '<div class="group-stem" style="margin-top:10px;">' + esc(screen.groupStem) + '</div>'
         + '<div class="net-strip">' + screen.items.map(q => {
           const a = attempt.answers[q.id];
