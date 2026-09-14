@@ -55,18 +55,29 @@ export async function createSubject(name) {
 
 // ---------- PAPERS ----------
 export async function fetchPapers(subjectId) {
-  const { data, error } = await supabase
+  const { data: papers, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, subject_id, questions(count)')
+    .select('id, name, pass_mark, subject_id')
     .eq('subject_id', subjectId)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return data.map((p) => ({
+  if (papers.length === 0) return [];
+  const paperIds = papers.map((p) => p.id);
+  const { data: qs, error: qErr } = await supabase
+    .from('questions')
+    .select('id, paper_id, group_id')
+    .in('paper_id', paperIds);
+  if (qErr) throw qErr;
+  // Count MTF groups as one question each, matching how they're shown to students.
+  const screenSets = {};
+  paperIds.forEach((id) => { screenSets[id] = new Set(); });
+  qs.forEach((q) => { screenSets[q.paper_id].add(q.group_id || q.id); });
+  return papers.map((p) => ({
     id: p.id,
     name: p.name,
     passMark: p.pass_mark,
     subjectId: p.subject_id,
-    questionCount: p.questions?.[0]?.count ?? 0,
+    questionCount: screenSets[p.id] ? screenSets[p.id].size : 0,
   }));
 }
 

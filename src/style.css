@@ -128,9 +128,9 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 /* Segmented True/False control */
 .seg-toggle{display:inline-flex; background:var(--surface); border:1px solid var(--border); border-radius:980px; padding:3px; gap:2px; flex-shrink:0;}
 .seg-btn{border:none; background:transparent; padding:8px 20px; border-radius:980px; font-size:13px; font-weight:600; color:var(--text2); cursor:pointer; font-family:inherit; transition:background .12s, box-shadow .12s, color .12s;}
-.seg-btn.selected{background:#fff; color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,0.14);}
-.seg-btn.selected.correct{background:var(--success); color:#fff;}
-.seg-btn.selected.wrong{background:var(--danger); color:#fff;}
+.seg-btn.selected{box-shadow:0 1px 3px rgba(0,0,0,0.14); color:#fff;}
+.seg-btn.true.selected{background:var(--success);}
+.seg-btn.false.selected{background:var(--danger);}
 
 /* MTF group card */
 .group-card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:28px;}

@@ -37,6 +37,15 @@ function swatchFor(str) {
   return '<div class="swatch" style="background:' + c.bg + '; color:' + c.fg + ';">' + esc(letter) + '</div>';
 }
 
+// Renders a True/False segmented control. `onFn` is the global function name
+// to call on click (e.g. 'selectAnswer' or 'setCorrect').
+function segToggle(qid, selectedKey, onFn) {
+  return '<div class="seg-toggle">'
+    + '<button class="seg-btn true ' + (selectedKey === 'A' ? 'selected' : '') + '" onclick="' + onFn + '(\'' + qid + '\',\'A\')">True</button>'
+    + '<button class="seg-btn false ' + (selectedKey === 'B' ? 'selected' : '') + '" onclick="' + onFn + '(\'' + qid + '\',\'B\')">False</button>'
+    + '</div>';
+}
+
 // Groups a flat, position-ordered list of question-like objects (each with
 // an optional .groupId) into single items and contiguous MTF groups.
 function groupConsecutive(list) {
@@ -171,7 +180,11 @@ window.openPaper = async function (paperId) {
 };
 
 // ---------- TAKE PAPER ----------
-window.selectAnswer = function (qid, key) { state.attemptAnswers[qid] = key; render(); };
+window.selectAnswer = function (qid, key) {
+  if (state.attemptAnswers[qid] === key) { delete state.attemptAnswers[qid]; }
+  else { state.attemptAnswers[qid] = key; }
+  render();
+};
 window.gotoQIndex = function (i) { state.attemptIndex = i; render(); };
 window.nextQ = function () { if (state.attemptIndex < state.screens.length - 1) { state.attemptIndex++; render(); } };
 window.prevQ = function () { if (state.attemptIndex > 0) { state.attemptIndex--; render(); } };
@@ -515,10 +528,7 @@ function renderTake() {
     if (q.type === 'TF') {
       const ans = state.attemptAnswers[q.id];
       body += '<div style="display:flex; justify-content:center; margin:18px 0 6px;">'
-        + '<div class="seg-toggle" style="transform:scale(1.15);">'
-        + '<button class="seg-btn ' + (ans === 'A' ? 'selected' : '') + '" onclick="selectAnswer(\'' + q.id + '\',\'A\')">True</button>'
-        + '<button class="seg-btn ' + (ans === 'B' ? 'selected' : '') + '" onclick="selectAnswer(\'' + q.id + '\',\'B\')">False</button>'
-        + '</div></div>';
+        + '<div style="transform:scale(1.15);">' + segToggle(q.id, ans, 'selectAnswer') + '</div></div>';
     } else {
       body += q.options.map(o => {
         const sel = state.attemptAnswers[q.id] === o.key;
@@ -533,10 +543,7 @@ function renderTake() {
       + screen.items.map(q => {
         const ans = state.attemptAnswers[q.id];
         return '<div class="mtf-row"><div class="mtf-stmt">' + esc(q.stem) + '</div>'
-          + '<div class="seg-toggle">'
-          + '<button class="seg-btn ' + (ans === 'A' ? 'selected' : '') + '" onclick="selectAnswer(\'' + q.id + '\',\'A\')">True</button>'
-          + '<button class="seg-btn ' + (ans === 'B' ? 'selected' : '') + '" onclick="selectAnswer(\'' + q.id + '\',\'B\')">False</button>'
-          + '</div></div>';
+          + segToggle(q.id, ans, 'selectAnswer') + '</div>';
       }).join('');
   }
 
@@ -795,10 +802,7 @@ function renderNewPaper() {
       entry.items.forEach((q, idx) => {
         html += '<div class="row" style="align-items:center; margin-bottom:8px; gap:10px;">'
           + '<input style="flex:1; margin:0;" placeholder="Statement ' + (idx + 1) + '" value="' + esc(q.stem) + '" oninput="updateQField(\'' + q.id + '\',\'stem\',this.value)">'
-          + '<div class="seg-toggle">'
-          + '<button type="button" class="seg-btn ' + (q.correct === 'A' ? 'selected' : '') + '" onclick="setCorrect(\'' + q.id + '\',\'A\')">True</button>'
-          + '<button type="button" class="seg-btn ' + (q.correct === 'B' ? 'selected' : '') + '" onclick="setCorrect(\'' + q.id + '\',\'B\')">False</button>'
-          + '</div>'
+          + segToggle(q.id, q.correct, 'setCorrect')
           + '<span class="link-a" onclick="removeQuestion(\'' + q.id + '\')" style="flex-shrink:0;">Remove</span>'
           + '</div>';
       });
