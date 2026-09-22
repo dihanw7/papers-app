@@ -27,6 +27,8 @@ let state = {
   draftStatus: 'idle', // idle | saving | saved
   settings: { groups: [], batches: [] },
   lockedMessage: '',
+  submitError: '',
+  answersLocked: false, // true once time is up, so answers can't change while a submit is retried
   // Paper builder / editor. editingPaperId is null when creating a new paper.
   editingPaperId: null,
   editingOriginalIds: [], // question ids the paper had when the editor opened
@@ -36,6 +38,17 @@ let state = {
 
 function esc(s) {
   return (s === undefined || s === null) ? '' : String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// Turns Supabase/network errors into messages a student can act on.
+function friendlyAuthError(e, fallback) {
+  const msg = (e && e.message) ? e.message : '';
+  if ((e && e.status === 429) || /rate limit|too many/i.test(msg)) {
+    return 'Too many people are signing in from this network right now. Wait a minute and try again.';
+  }
+  if (/failed to fetch|network|load failed/i.test(msg)) {
+    return 'Could not reach the server. Check your internet connection and try again.';
+  }
+  return fallback || msg;
 }
 function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
 // MTF group ids are stored in a uuid column, so they need to be real UUIDs.
@@ -147,20 +160,44 @@ function computeScore() {
   });
   return { totalPoints, totalPossible };
 }
+let submitInFlight = false;
 async function finalizeSubmit(timedOut) {
+  if (submitInFlight) return;
+  submitInFlight = true;
   clearCountdown();
   clearTimeout(draftSaveTimeout);
-  localStorage.removeItem(timerStorageKey(state.selectedPaper));
+  if (timedOut) state.answersLocked = true; // freeze answers at the deadline
+  const paperId = state.selectedPaper;
   const { totalPoints, totalPossible } = computeScore();
-  state.busy = true; render();
-  const attempt = await db.submitAttempt({
-    paperId: state.selectedPaper, userId: state.currentUser.id,
-    answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
-  });
-  try { await db.deleteDraft(state.selectedPaper, state.currentUser.id); } catch (e) { /* non-fatal */ }
+  state.busy = true; state.submitError = ''; render();
+  let attempt;
+  try {
+    attempt = await db.submitAttempt({
+      paperId, userId: state.currentUser.id,
+      answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
+    });
+  } catch (e) {
+    // Network blip / server busy: keep everything, tell the student, retry.
+    submitInFlight = false;
+    state.busy = false;
+    try { await db.saveDraft(paperId, state.currentUser.id, state.attemptAnswers); } catch (e2) { /* offline too */ }
+    if (timedOut) {
+      state.submitError = 'Time is up. Submitting your answers failed (connection problem) — retrying automatically. Please keep this page open.';
+      setTimeout(() => { if (state.screen === 'take' && state.selectedPaper === paperId) finalizeSubmit(true); }, 5000);
+    } else {
+      state.submitError = 'Could not submit — check your connection and press Finish & submit again. Your answers are safe on this screen.';
+      startCountdownIfNeeded(); // resume the clock; deadline is unchanged
+    }
+    render();
+    return;
+  }
+  submitInFlight = false;
+  localStorage.removeItem(timerStorageKey(paperId));
+  try { await db.deleteDraft(paperId, state.currentUser.id); } catch (e) { /* non-fatal */ }
   state.busy = false;
+  state.answersLocked = false;
   state.timedOut = timedOut;
-  await buildReview(state.selectedPaper, {
+  await buildReview(paperId, {
     score: attempt.score, total: attempt.total, answers: attempt.answers, submittedAt: attempt.submitted_at,
   });
   render();
@@ -249,7 +286,7 @@ window.doSignup = async function () {
     render();
   } catch (e) {
     state.busy = false;
-    state.errorMsg = e.message.includes('already registered') ? 'That MED number is already registered — try logging in instead.' : e.message;
+    state.errorMsg = /already registered/i.test(e.message || '') ? 'That MED number is already registered — try logging in instead.' : friendlyAuthError(e);
     render();
   }
 };
@@ -269,7 +306,7 @@ window.doLogin = async function () {
     render();
   } catch (e) {
     state.busy = false;
-    state.errorMsg = 'Incorrect MED number or password.';
+    state.errorMsg = friendlyAuthError(e, 'Incorrect MED number or password.');
     render();
   }
 };
@@ -304,6 +341,8 @@ window.openPaper = async function (paperId) {
   state.paperDetail = paper;
   state.screens = groupConsecutive(paper.questions);
   const existingAttempt = await db.fetchMyAttempt(paperId, state.currentUser.id);
+  const isClosed = !!(paper.closesAt && Date.now() >= new Date(paper.closesAt).getTime());
+  const closedDraft = (!existingAttempt && isClosed) ? await db.fetchDraft(paperId, state.currentUser.id) : null;
   state.busy = false;
   if (existingAttempt) {
     await buildReview(paperId, {
@@ -313,7 +352,19 @@ window.openPaper = async function (paperId) {
   } else if (paper.opensAt && Date.now() < new Date(paper.opensAt).getTime()) {
     state.lockedMessage = 'This paper opens ' + new Date(paper.opensAt).toLocaleString() + '. Come back then to start it.';
     state.screen = 'paper_locked';
-  } else if (paper.closesAt && Date.now() >= new Date(paper.closesAt).getTime()) {
+  } else if (isClosed && closedDraft) {
+    // Student started it but never submitted (e.g. closed the tab) and the
+    // window has now closed: submit what they had, same as a timeout.
+    state.attemptAnswers = closedDraft.answers || {};
+    state.attemptIndex = 0;
+    state.attemptDeadline = null;
+    state.screen = 'take';
+    state.answersLocked = true;
+    state.submitError = '';
+    render();
+    await finalizeSubmit(true);
+    return;
+  } else if (isClosed) {
     state.lockedMessage = 'This paper closed ' + new Date(paper.closesAt).toLocaleString() + ' and can no longer be started.';
     state.screen = 'paper_locked';
   } else {
@@ -322,6 +373,8 @@ window.openPaper = async function (paperId) {
     state.attemptIndex = 0;
     state.screen = 'take';
     state.draftStatus = 'idle';
+    state.submitError = '';
+    state.answersLocked = false;
     startCountdownIfNeeded();
   }
   render();
@@ -329,6 +382,7 @@ window.openPaper = async function (paperId) {
 
 // ---------- TAKE PAPER ----------
 window.selectAnswer = function (qid, key) {
+  if (state.answersLocked || state.busy) return;
   if (state.attemptAnswers[qid] === key) { delete state.attemptAnswers[qid]; }
   else { state.attemptAnswers[qid] = key; }
   scheduleDraftSave();
@@ -339,6 +393,7 @@ window.nextQ = function () { if (state.attemptIndex < state.screens.length - 1) 
 window.prevQ = function () { if (state.attemptIndex > 0) { state.attemptIndex--; render(); } };
 
 window.submitPaper = async function () {
+  if (state.busy || submitInFlight) return;
   const totalItems = state.paperDetail.questions.length;
   const answeredCount = Object.keys(state.attemptAnswers).length;
   const unanswered = totalItems - answeredCount;
@@ -785,12 +840,14 @@ function renderTake() {
     + (state.draftStatus === 'saving' ? '<span style="font-size:12px;color:var(--text2);">Saving…</span>' : (state.draftStatus === 'saved' ? '<span style="font-size:12px;color:var(--text2);">Saved</span>' : ''))
     + '<span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span>'
     + '</div></div>'
+    + (state.submitError ? '<div class="timeout-banner">' + esc(state.submitError) + '</div>' : '')
+    + (state.busy ? '<div class="timeout-banner" style="background:var(--accent-tint); border-color:#cfe2fb; color:var(--accent);">Submitting…</div>' : '')
     + '<div class="progressbar"><div class="progressfill" style="width:' + ((i + 1) / screens.length * 100) + '%"></div></div>'
     + '<div class="' + (screen.kind === 'group' ? 'group-card' : 'qcard') + '">'
     + body
     + '<div class="row" style="margin-top:22px;">'
     + '<button class="btn secondary" onclick="prevQ()" ' + (i === 0 ? 'disabled' : '') + '>Previous</button>'
-    + (i < screens.length - 1 ? '<button class="btn" onclick="nextQ()">Next</button>' : '<button class="btn" onclick="submitPaper()">Finish &amp; submit</button>')
+    + (i < screens.length - 1 ? '<button class="btn" onclick="nextQ()">Next</button>' : '<button class="btn" onclick="submitPaper()" ' + (state.busy ? 'disabled' : '') + '>Finish &amp; submit</button>')
     + '</div>'
     + '</div>'
     + '<div class="qgrid">' + screens.map((sc, idx) => {
@@ -798,7 +855,7 @@ function renderTake() {
       const cls = idx === i ? 'current' : (isAnswered ? 'answered' : '');
       return '<div class="qdot ' + cls + '" onclick="gotoQIndex(' + idx + ')">' + (idx + 1) + '</div>';
     }).join('') + '</div>'
-    + (answeredCount === totalItems ? '<button class="btn" style="margin-top:14px;" onclick="submitPaper()">Finish &amp; submit</button>' : '');
+    + (answeredCount === totalItems ? '<button class="btn" style="margin-top:14px;" onclick="submitPaper()" ' + (state.busy ? 'disabled' : '') + '>Finish &amp; submit</button>' : '');
 }
 
 // ---------- REVIEW ----------
