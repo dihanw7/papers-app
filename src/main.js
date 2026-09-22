@@ -20,10 +20,13 @@ let state = {
   analyticsSubject: null,
   analyticsPaper: null,
   analyticsExpandedQ: null,
+  analyticsTypeFilter: 'all', // all | SBA | TF | MTF
+  analyticsViewingAttempt: null,
   attemptDeadline: null,
   timedOut: false,
   draftStatus: 'idle', // idle | saving | saved
   settings: { groups: [], batches: [] },
+  lockedMessage: '',
 };
 
 function esc(s) {
@@ -149,15 +152,23 @@ function autoSubmitOnTimeout() {
 function startCountdownIfNeeded() {
   clearCountdown();
   const paper = state.paperDetail;
-  if (!paper.timeLimitMinutes) { state.attemptDeadline = null; return; }
-  const key = timerStorageKey(paper.id);
-  let startedAt = localStorage.getItem(key);
-  if (!startedAt) {
-    startedAt = Date.now().toString();
-    localStorage.setItem(key, startedAt);
+  let deadline = null;
+  if (paper.timeLimitMinutes) {
+    const key = timerStorageKey(paper.id);
+    let startedAt = localStorage.getItem(key);
+    if (!startedAt) {
+      startedAt = Date.now().toString();
+      localStorage.setItem(key, startedAt);
+    }
+    deadline = parseInt(startedAt, 10) + paper.timeLimitMinutes * 60000;
   }
-  state.attemptDeadline = parseInt(startedAt, 10) + paper.timeLimitMinutes * 60000;
-  if (Date.now() >= state.attemptDeadline) {
+  if (paper.closesAt) {
+    const closesMs = new Date(paper.closesAt).getTime();
+    deadline = deadline ? Math.min(deadline, closesMs) : closesMs;
+  }
+  state.attemptDeadline = deadline;
+  if (!deadline) return; // no time pressure at all
+  if (Date.now() >= deadline) {
     autoSubmitOnTimeout();
     return;
   }
@@ -279,6 +290,12 @@ window.openPaper = async function (paperId) {
       score: existingAttempt.score, total: existingAttempt.total,
       answers: existingAttempt.answers, submittedAt: existingAttempt.submitted_at,
     });
+  } else if (paper.opensAt && Date.now() < new Date(paper.opensAt).getTime()) {
+    state.lockedMessage = 'This paper opens ' + new Date(paper.opensAt).toLocaleString() + '. Come back then to start it.';
+    state.screen = 'paper_locked';
+  } else if (paper.closesAt && Date.now() >= new Date(paper.closesAt).getTime()) {
+    state.lockedMessage = 'This paper closed ' + new Date(paper.closesAt).toLocaleString() + ' and can no longer be started.';
+    state.screen = 'paper_locked';
   } else {
     const draft = await db.fetchDraft(paperId, state.currentUser.id);
     state.attemptAnswers = (draft && draft.answers) ? draft.answers : {};
@@ -394,6 +411,14 @@ window.saveNewPaper = async function () {
   const passMark = parseInt(document.getElementById('np_pass').value || '50');
   const timeLimitRaw = document.getElementById('np_timelimit').value.trim();
   const timeLimitMinutes = timeLimitRaw ? parseInt(timeLimitRaw) : null;
+  const opensRaw = document.getElementById('np_opens').value;
+  const closesRaw = document.getElementById('np_closes').value;
+  const opensAt = opensRaw ? new Date(opensRaw).toISOString() : null;
+  const closesAt = closesRaw ? new Date(closesRaw).toISOString() : null;
+  if (opensAt && closesAt && new Date(closesAt) <= new Date(opensAt)) {
+    alert('Closes at must be after opens at.');
+    return;
+  }
   if (!subjectId || !name) { alert('Choose a subject and give the paper a name.'); return; }
   if (state.newPaperQuestions.length === 0) { alert('Add at least one question.'); return; }
   for (const q of state.newPaperQuestions) {
@@ -419,7 +444,7 @@ window.saveNewPaper = async function () {
   });
   state.busy = true; render();
   try {
-    const paper = await db.createPaper({ subjectId, name, passMark, timeLimitMinutes });
+    const paper = await db.createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt });
     await db.addQuestions(paper.id, state.newPaperQuestions);
     state.busy = false;
     alert('Paper saved.');
@@ -514,7 +539,7 @@ window.setAnalyticsSubject = async function (subjId) {
   state.papers = subjId ? await db.fetchPapers(subjId) : [];
   render();
 };
-window.setAnalyticsPaper = async function (paperId) { state.analyticsPaper = paperId; state.analyticsExpandedQ = null; render(); };
+window.setAnalyticsPaper = async function (paperId) { state.analyticsPaper = paperId; state.analyticsExpandedQ = null; state.analyticsViewingAttempt = null; state.analyticsTypeFilter = 'all'; render(); };
 window.toggleQuestionDetail = function (qid) {
   state.analyticsExpandedQ = state.analyticsExpandedQ === qid ? null : qid;
   render();
@@ -569,11 +594,17 @@ function renderScreen() {
     case 'papers': return renderPapers();
     case 'take': return renderTake();
     case 'review': return '<div id="reviewhost">Loading results…</div>';
+    case 'paper_locked': return renderPaperLocked();
     case 'analytics': return renderAnalyticsShell();
     case 'admin': return renderAdmin();
     case 'admin_newpaper': return renderNewPaper();
     default: return '';
   }
+}
+
+function renderPaperLocked() {
+  return '<div class="flex-between"><h1>' + esc(state.paperDetail.name) + '</h1><span class="link-a" onclick="goto(\'papers\')">← Back</span></div>'
+    + '<div class="empty"><div class="dot"></div>' + esc(state.lockedMessage) + '</div>';
 }
 
 // ---------- AUTH SCREEN ----------
@@ -620,12 +651,20 @@ function renderHome() {
     ).join('') + '</div>';
 }
 
+function paperScheduleBadge(p) {
+  const now = Date.now();
+  if (p.opensAt && now < new Date(p.opensAt).getTime()) return '<div class="d" style="color:var(--accent);">Opens ' + new Date(p.opensAt).toLocaleString() + '</div>';
+  if (p.closesAt && now >= new Date(p.closesAt).getTime()) return '<div class="d" style="color:var(--danger);">Closed</div>';
+  if (p.closesAt) return '<div class="d" style="color:var(--text2);">Closes ' + new Date(p.closesAt).toLocaleString() + '</div>';
+  return '';
+}
+
 function renderPapers() {
   return '<div class="flex-between"><h1>' + esc(state.selectedSubject.name) + '</h1><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>'
     + '<p class="sub">Choose a paper to begin.</p>'
     + (state.papers.length === 0 ? '<div class="empty"><div class="dot"></div>No papers in this subject yet.</div>' :
       '<div class="grid">' + state.papers.map(p =>
-        '<div class="tile" onclick="openPaper(\'' + p.id + '\')">' + swatchFor(p.name) + '<div class="t">' + esc(p.name) + '</div><div class="d">' + p.questionCount + ' questions · pass ' + p.passMark + '%' + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min' : '') + '</div></div>'
+        '<div class="tile" onclick="openPaper(\'' + p.id + '\')">' + swatchFor(p.name) + '<div class="t">' + esc(p.name) + '</div><div class="d">' + p.questionCount + ' questions · pass ' + p.passMark + '%' + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min' : '') + '</div>' + paperScheduleBadge(p) + '</div>'
       ).join('') + '</div>');
 }
 
@@ -666,7 +705,7 @@ function renderTake() {
 
   return '<div class="flex-between"><h2>' + esc(state.paperDetail.name) + '</h2>'
     + '<div class="row" style="gap:10px; align-items:center;">'
-    + (state.paperDetail.timeLimitMinutes && state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - Date.now()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - Date.now()) + '</span>' : '')
+    + (state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - Date.now()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - Date.now()) + '</span>' : '')
     + (state.draftStatus === 'saving' ? '<span style="font-size:12px;color:var(--text2);">Saving…</span>' : (state.draftStatus === 'saved' ? '<span style="font-size:12px;color:var(--text2);">Saved</span>' : ''))
     + '<span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span>'
     + '</div></div>'
@@ -687,46 +726,8 @@ function renderTake() {
 }
 
 // ---------- REVIEW ----------
-function renderReviewDeferred() {
-  const host = document.getElementById('reviewhost');
-  if (!host || !state.reviewData) return;
-  const { attempt, allCount, dist } = state.reviewData;
-  const paper = state.paperDetail;
-  const pct = Math.round(attempt.score / attempt.total * 100);
-  const passed = pct >= (paper.passMark || 50);
-
-  let singleCorrect = 0, singleTotal = 0, mtfNet = 0, mtfTotal = 0;
-  state.screens.forEach(screen => {
-    const max = screenMaxMarks(screen);
-    const earned = screenEarnedMarks(screen, attempt.answers);
-    if (screen.kind === 'single') {
-      singleTotal += max;
-      singleCorrect += earned;
-    } else {
-      mtfTotal += max;
-      mtfNet += earned;
-    }
-  });
-
-  let html = '<div class="flex-between"><h2>' + esc(paper.name) + ' — results</h2><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>';
-  if (state.timedOut) {
-    html += '<div class="timeout-banner">Time ran out — your answers were submitted automatically.</div>';
-    state.timedOut = false;
-  }
-  html += '<div class="card" style="text-align:center;">'
-    + '<div class="scorecircle" style="border-color:' + (passed ? '#c9f0d3' : '#fbdcda') + ';">'
-    + '<div class="n">' + pct + '%</div><div class="l">' + attempt.score + ' / ' + attempt.total + '</div></div>'
-    + '<span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Below pass mark') + '</span>'
-    + '<p class="sub" style="margin-top:14px;">Submitted ' + new Date(attempt.submittedAt).toLocaleString() + '. Answers are locked — you can review below but not change them.</p>';
-  if (mtfTotal > 0 && singleTotal > 0) {
-    html += '<div class="score-breakdown">'
-      + '<div class="breakdown-chip"><b>' + singleCorrect + '/' + singleTotal + '</b>SBA &amp; TF</div>'
-      + '<div class="breakdown-chip"><b>' + mtfNet + '/' + mtfTotal + '</b>MTF net (±1 marking)</div>'
-      + '</div>';
-  }
-  html += '</div>';
-
-  html += '<div class="qgrid">' + state.screens.map((screen, idx) => {
+function renderAttemptBody(screens, attempt, dist, allCount) {
+  let html = '<div class="qgrid">' + screens.map((screen, idx) => {
     let cls;
     if (screen.kind === 'single') {
       cls = attempt.answers[screen.question.id] === screen.question.correct ? 'correct' : 'wrong';
@@ -738,7 +739,7 @@ function renderReviewDeferred() {
     return '<div class="qdot ' + cls + '" onclick="document.getElementById(\'rq_' + idx + '\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">' + (idx + 1) + '</div>';
   }).join('') + '</div>';
 
-  state.screens.forEach((screen, idx) => {
+  screens.forEach((screen, idx) => {
     if (screen.kind === 'single') {
       const q = screen.question;
       const yourAns = attempt.answers[q.id];
@@ -752,7 +753,7 @@ function renderReviewDeferred() {
         const pillCls = !yourAns ? 'blank' : (gotIt ? 'correct' : 'wrong');
         const count = (dist[q.id] && dist[q.id][q.correct]) || 0;
         const pctCorrectCohort = allCount > 0 ? Math.round(count / allCount * 100) : 0;
-        html += '<div style="display:flex; justify-content:center; margin:16px 0 10px;"><span class="mtf-answer-pill ' + pillCls + '">Your answer: ' + esc(yourLabel) + '</span></div>'
+        html += '<div style="display:flex; justify-content:center; margin:16px 0 10px;"><span class="mtf-answer-pill ' + pillCls + '">Answer: ' + esc(yourLabel) + '</span></div>'
           + '<p class="sub" style="text-align:center; margin:0;">' + (pillCls !== 'correct' ? 'Correct answer: ' + correctLabel + ' · ' : '') + pctCorrectCohort + '% of the cohort got this right</p>';
       } else {
         html += q.options.map(o => {
@@ -799,6 +800,48 @@ function renderReviewDeferred() {
       html += '</div>';
     }
   });
+  return html;
+}
+
+function renderReviewDeferred() {
+  const host = document.getElementById('reviewhost');
+  if (!host || !state.reviewData) return;
+  const { attempt, allCount, dist } = state.reviewData;
+  const paper = state.paperDetail;
+  const pct = Math.round(attempt.score / attempt.total * 100);
+  const passed = pct >= (paper.passMark || 50);
+
+  let singleCorrect = 0, singleTotal = 0, mtfNet = 0, mtfTotal = 0;
+  state.screens.forEach(screen => {
+    const max = screenMaxMarks(screen);
+    const earned = screenEarnedMarks(screen, attempt.answers);
+    if (screen.kind === 'single') {
+      singleTotal += max;
+      singleCorrect += earned;
+    } else {
+      mtfTotal += max;
+      mtfNet += earned;
+    }
+  });
+
+  let html = '<div class="flex-between"><h2>' + esc(paper.name) + ' — results</h2><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>';
+  if (state.timedOut) {
+    html += '<div class="timeout-banner">Time ran out — your answers were submitted automatically.</div>';
+    state.timedOut = false;
+  }
+  html += '<div class="card" style="text-align:center;">'
+    + '<div class="scorecircle" style="border-color:' + (passed ? '#c9f0d3' : '#fbdcda') + ';">'
+    + '<div class="n">' + pct + '%</div><div class="l">' + attempt.score + ' / ' + attempt.total + '</div></div>'
+    + '<span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Below pass mark') + '</span>'
+    + '<p class="sub" style="margin-top:14px;">Submitted ' + new Date(attempt.submittedAt).toLocaleString() + '. Answers are locked — you can review below but not change them.</p>';
+  if (mtfTotal > 0 && singleTotal > 0) {
+    html += '<div class="score-breakdown">'
+      + '<div class="breakdown-chip"><b>' + singleCorrect + '/' + singleTotal + '</b>SBA &amp; TF</div>'
+      + '<div class="breakdown-chip"><b>' + mtfNet + '/' + mtfTotal + '</b>MTF net (±1 marking)</div>'
+      + '</div>';
+  }
+  html += '</div>';
+  html += renderAttemptBody(state.screens, attempt, dist, allCount);
   host.innerHTML = html;
 }
 
@@ -827,6 +870,15 @@ function renderAnalyticsPaperSelect() {
     + state.papers.map(p => '<option value="' + p.id + '" ' + (state.analyticsPaper === p.id ? 'selected' : '') + '>' + esc(p.name) + '</option>').join('')
     + '</select>';
 }
+window.viewStudentAttempt = function (userId) {
+  state.analyticsViewingAttempt = userId;
+  render();
+};
+window.setAnalyticsTypeFilter = function (t) {
+  state.analyticsTypeFilter = t;
+  render();
+};
+
 async function renderAnalyticsResult() {
   const resHost = document.getElementById('analyticsresult');
   if (!resHost) return;
@@ -843,36 +895,96 @@ async function renderAnalyticsResult() {
     analyticsCache = { paperId: state.analyticsPaper, paper, all, dist };
   }
   if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>'; return; }
-  all.sort((a, b) => b.score - a.score);
   const isAdmin = state.currentUser.role === 'admin';
-  let html = '<div class="card"><h2>Leaderboard</h2><p class="sub">' + all.length + ' attempt(s) · pass mark ' + paper.passMark + '%</p><table><thead><tr><th>#</th><th>' + (isAdmin ? 'Name' : 'You') + '</th><th>Group</th><th>Score</th><th>Result</th></tr></thead><tbody>';
+
+  // ---- Individual student attempt viewer (admin only) ----
+  if (isAdmin && state.analyticsViewingAttempt) {
+    const a = all.find(x => x.userId === state.analyticsViewingAttempt);
+    if (!a) { state.analyticsViewingAttempt = null; }
+    else {
+      const pct = Math.round(a.score / a.total * 100);
+      const passed = pct >= paper.passMark;
+      const screens = groupConsecutive(paper.questions);
+      let html = '<div class="card"><div class="flex-between">'
+        + '<div><h2 style="margin-bottom:2px;">' + esc(a.name) + '</h2><p class="sub" style="margin:0;">' + esc(a.medNo) + ' · Group ' + esc(a.group) + '</p></div>'
+        + '<span class="link-a" onclick="viewStudentAttempt(null)">← Back to leaderboard</span>'
+        + '</div>'
+        + '<div class="flex-between" style="margin-top:14px;">'
+        + '<span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span>'
+        + '<span style="font-weight:600;">' + a.score + ' / ' + a.total + ' (' + pct + '%)</span>'
+        + '</div></div>';
+      html += renderAttemptBody(screens, a, dist, all.length);
+      resHost.innerHTML = html;
+      return;
+    }
+  }
+
+  all.sort((a, b) => b.score - a.score);
+  let html = '<div class="card"><h2>Leaderboard</h2><p class="sub">' + all.length + ' attempt(s) · pass mark ' + paper.passMark + '%' + (isAdmin ? ' · tap a row to see that student\'s full paper' : '') + '</p><table><thead><tr><th>#</th><th>' + (isAdmin ? 'Name' : 'You') + '</th><th>Group</th><th>Score</th><th>Result</th></tr></thead><tbody>';
   all.forEach((a, idx) => {
     const pct = Math.round(a.score / a.total * 100);
     const passed = pct >= paper.passMark;
     const isMe = a.userId === state.currentUser.id;
     const nameShown = isAdmin ? esc(a.name) + ' (' + esc(a.medNo) + ')' : (isMe ? esc(a.name) + ' (you)' : 'Student ' + (idx + 1));
-    html += '<tr' + (isMe ? ' style="background:var(--accent-tint);"' : '') + '><td>' + (idx + 1) + '</td><td>' + nameShown + '</td><td>' + esc(a.group) + '</td><td>' + a.score + '/' + a.total + ' (' + pct + '%)</td><td><span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span></td></tr>';
+    const clickAttr = isAdmin ? ' onclick="viewStudentAttempt(\'' + a.userId + '\')" style="cursor:pointer;' + (isMe ? 'background:var(--accent-tint);' : '') + '"' : (isMe ? ' style="background:var(--accent-tint);"' : '');
+    html += '<tr' + clickAttr + '><td>' + (idx + 1) + '</td><td>' + nameShown + '</td><td>' + esc(a.group) + '</td><td>' + a.score + '/' + a.total + ' (' + pct + '%)</td><td><span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span></td></tr>';
   });
   html += '</tbody></table></div>';
-  const stats = paper.questions.map(q => {
-    let correctCount = 0;
-    all.forEach(a => { if (a.answers[q.id] === q.correct) correctCount++; });
-    const label = q.groupStem ? (q.groupStem + ' — ' + q.stem) : q.stem;
-    return { id: q.id, q, label, pct: Math.round(correctCount / all.length * 100) };
-  }).sort((a, b) => a.pct - b.pct);
-  html += '<div class="card"><h2>Question difficulty</h2><p class="sub">Ranked hardest first, by % who got it right. Click a question to see it in full. MTF statements are ranked individually.</p>';
-  stats.forEach((s, idx) => {
-    const expanded = state.analyticsExpandedQ === s.id;
-    html += '<div class="row" style="align-items:center; margin-bottom:6px; cursor:pointer;" onclick="toggleQuestionDetail(\'' + s.id + '\')">'
-      + '<div style="width:40px; font-weight:600; color:var(--text2); font-size:13px;">' + (idx + 1) + '</div>'
-      + '<div style="flex:1;"><div style="font-size:14px;">' + esc(s.label.slice(0, 100)) + (s.label.length > 100 ? '…' : '') + '</div>'
-      + '<div class="bar-track"><div class="bar-fill" style="width:' + s.pct + '%; background:' + (s.pct < 50 ? '#d93025' : (s.pct < 75 ? '#f2a900' : '#34c759')) + ';"></div></div></div>'
-      + '<div style="width:50px; text-align:right; font-weight:600; font-size:13px;">' + s.pct + '%</div>'
-      + '</div>';
-    if (expanded) {
-      html += renderExpandedQuestionDetail(s.q, dist, all.length);
+
+  // ---- Question difficulty, filterable by type ----
+  const screens = groupConsecutive(paper.questions);
+  const filters = [['all', 'All'], ['SBA', 'SBA'], ['TF', 'TF'], ['MTF', 'MTF']];
+  html += '<div class="card"><h2>Question difficulty</h2><p class="sub">Ranked hardest first, by % who got it right.</p>'
+    + '<div class="tabbar">' + filters.map(f => '<button class="' + (state.analyticsTypeFilter === f[0] ? 'active' : '') + '" onclick="setAnalyticsTypeFilter(\'' + f[0] + '\')">' + f[1] + '</button>').join('') + '</div>';
+
+  if (state.analyticsTypeFilter === 'MTF') {
+    const groups = screens.filter(s => s.kind === 'group').map(g => {
+      const itemStats = g.items.map(q => {
+        let c = 0; all.forEach(a => { if (a.answers[q.id] === q.correct) c++; });
+        return { q, pct: Math.round(c / all.length * 100) };
+      });
+      const avg = Math.round(itemStats.reduce((sum, s) => sum + s.pct, 0) / itemStats.length);
+      return { groupStem: g.groupStem, itemStats, avg };
+    }).sort((a, b) => a.avg - b.avg);
+    if (groups.length === 0) {
+      html += '<p class="sub" style="margin:0;">No MTF questions in this paper.</p>';
     }
-  });
+    groups.forEach(g => {
+      html += '<div class="group-card" style="margin-bottom:14px; background:var(--surface);">'
+        + '<div class="flex-between"><div class="group-stem" style="margin:0;">' + esc(g.groupStem) + '</div>'
+        + '<span class="net-score-pill ' + (g.avg < 50 ? 'low' : (g.avg < 75 ? 'mid' : 'good')) + '">' + g.avg + '% avg</span></div>';
+      g.itemStats.forEach(s => {
+        const expanded = state.analyticsExpandedQ === s.q.id;
+        html += '<div class="row" style="align-items:center; margin:10px 0 4px; cursor:pointer;" onclick="toggleQuestionDetail(\'' + s.q.id + '\')">'
+          + '<div style="flex:1;"><div style="font-size:14px;">' + esc(s.q.stem) + '</div>'
+          + '<div class="bar-track"><div class="bar-fill" style="width:' + s.pct + '%; background:' + (s.pct < 50 ? '#d93025' : (s.pct < 75 ? '#f2a900' : '#34c759')) + ';"></div></div></div>'
+          + '<div style="width:50px; text-align:right; font-weight:600; font-size:13px;">' + s.pct + '%</div>'
+          + '</div>';
+        if (expanded) html += renderExpandedQuestionDetail(s.q, dist, all.length);
+      });
+      html += '</div>';
+    });
+  } else {
+    const stats = screens.filter(s => s.kind === 'single' && (state.analyticsTypeFilter === 'all' || s.question.type === state.analyticsTypeFilter))
+      .map(s => ({ id: s.question.id, q: s.question, label: s.question.stem, pct: (() => {
+        let c = 0; all.forEach(a => { if (a.answers[s.question.id] === s.question.correct) c++; });
+        return Math.round(c / all.length * 100);
+      })() }))
+      .sort((a, b) => a.pct - b.pct);
+    if (stats.length === 0) {
+      html += '<p class="sub" style="margin:0;">No questions of this type in this paper.</p>';
+    }
+    stats.forEach((s, idx) => {
+      const expanded = state.analyticsExpandedQ === s.id;
+      html += '<div class="row" style="align-items:center; margin-bottom:6px; cursor:pointer;" onclick="toggleQuestionDetail(\'' + s.id + '\')">'
+        + '<div style="width:40px; font-weight:600; color:var(--text2); font-size:13px;">' + (idx + 1) + '</div>'
+        + '<div style="flex:1;"><div style="font-size:14px;">' + esc(s.label.slice(0, 100)) + (s.label.length > 100 ? '…' : '') + '</div>'
+        + '<div class="bar-track"><div class="bar-fill" style="width:' + s.pct + '%; background:' + (s.pct < 50 ? '#d93025' : (s.pct < 75 ? '#f2a900' : '#34c759')) + ';"></div></div></div>'
+        + '<div style="width:50px; text-align:right; font-weight:600; font-size:13px;">' + s.pct + '%</div>'
+        + '</div>';
+      if (expanded) html += renderExpandedQuestionDetail(s.q, dist, all.length);
+    });
+  }
   html += '</div>';
   resHost.innerHTML = html;
 }
@@ -964,7 +1076,10 @@ function renderNewPaper() {
     + '</select>'
     + '<label class="flabel">Paper name</label><input id="np_name" placeholder="e.g. Mock 01">'
     + '<label class="flabel">Pass mark (%)</label><input id="np_pass" type="number" value="50">'
-    + '<label class="flabel">Time limit in minutes (optional — leave blank for no limit)</label><input id="np_timelimit" type="number" placeholder="e.g. 60">'
+    + '<label class="flabel">Time limit per student, in minutes (optional — leave blank for no limit)</label><input id="np_timelimit" type="number" placeholder="e.g. 60">'
+    + '<label class="flabel">Opens at (optional — leave blank to make it available immediately)</label><input id="np_opens" type="datetime-local">'
+    + '<label class="flabel">Closes at (optional — leave blank for no scheduled close)</label><input id="np_closes" type="datetime-local">'
+    + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.</p>'
     + '</div>'
     + '<div class="card"><h2>Import from Excel</h2>'
     + '<p class="sub">Columns: <b>Type</b> (SBA, TF, or MTF), <b>Stem</b>, <b>Statement</b> (MTF only — one row per statement, same Stem repeated for the whole group), <b>OptionA</b>–<b>OptionE</b> (SBA only), <b>Correct</b> (a letter for SBA, or True/False for TF and MTF rows).</p>'

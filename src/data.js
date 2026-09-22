@@ -80,7 +80,7 @@ export async function deleteSubject(subjectId) {
 export async function fetchPapers(subjectId) {
   const { data: papers, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, subject_id, time_limit_minutes')
+    .select('id, name, pass_mark, subject_id, time_limit_minutes, opens_at, closes_at')
     .eq('subject_id', subjectId)
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -101,6 +101,8 @@ export async function fetchPapers(subjectId) {
     passMark: p.pass_mark,
     subjectId: p.subject_id,
     timeLimitMinutes: p.time_limit_minutes,
+    opensAt: p.opens_at,
+    closesAt: p.closes_at,
     questionCount: screenSets[p.id] ? screenSets[p.id].size : 0,
   }));
 }
@@ -125,10 +127,15 @@ export async function deletePaper(paperId) {
   if (error) throw error;
 }
 
-export async function createPaper({ subjectId, name, passMark, timeLimitMinutes }) {
+export async function createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt }) {
   const { data, error } = await supabase
     .from('papers')
-    .insert({ subject_id: subjectId, name, pass_mark: passMark, time_limit_minutes: timeLimitMinutes || null })
+    .insert({
+      subject_id: subjectId, name, pass_mark: passMark,
+      time_limit_minutes: timeLimitMinutes || null,
+      opens_at: opensAt || null,
+      closes_at: closesAt || null,
+    })
     .select()
     .single();
   if (error) throw error;
@@ -166,6 +173,8 @@ export async function fetchPaperWithQuestions(paperId) {
     passMark: paper.pass_mark,
     subjectId: paper.subject_id,
     timeLimitMinutes: paper.time_limit_minutes,
+    opensAt: paper.opens_at,
+    closesAt: paper.closes_at,
     questions: questions.map((q) => ({
       id: q.id,
       type: q.type,
