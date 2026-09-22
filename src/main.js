@@ -28,6 +28,8 @@ let state = {
   settings: { groups: [], batches: [] },
   lockedMessage: '',
   submitError: '',
+  myAttemptedPaperIds: [], // papers in the current subject this user has already submitted
+  lockedKind: '', // upcoming | closed | locked — why the current paper can't be started
   answersLocked: false, // true once time is up, so answers can't change while a submit is retried
   // Paper builder / editor. editingPaperId is null when creating a new paper.
   editingPaperId: null,
@@ -39,6 +41,33 @@ let state = {
 function esc(s) {
   return (s === undefined || s === null) ? '' : String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// ---------- Paper availability ----------
+// One place that decides whether a paper can be started right now.
+//  - Scheduled papers (opens_at and/or closes_at set) follow the schedule only.
+//  - Everything else (timer-only or untimed) is open only while an admin has unlocked it.
+function paperStatus(p) {
+  const now = Date.now();
+  if (p.opensAt || p.closesAt) {
+    if (p.opensAt && now < new Date(p.opensAt).getTime()) return { kind: 'upcoming', open: false };
+    if (p.closesAt && now >= new Date(p.closesAt).getTime()) return { kind: 'closed', open: false };
+    return { kind: 'open', open: true, scheduled: true };
+  }
+  return p.isOpen ? { kind: 'open', open: true, scheduled: false } : { kind: 'locked', open: false };
+}
+function fmtWhen(iso) {
+  return new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+}
+// Soft rounded padlock. `size` in px.
+function lockIcon(size) {
+  return '<svg class="lock-svg" width="' + size + '" height="' + size + '" viewBox="0 0 48 48" aria-hidden="true">'
+    + '<path d="M15 21v-5.5a9 9 0 0 1 18 0V21" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round"/>'
+    + '<rect x="9" y="20" width="30" height="23" rx="8" fill="currentColor"/>'
+    + '<rect x="9" y="20" width="30" height="8" rx="4" fill="#fff" opacity=".18"/>'
+    + '<circle cx="24" cy="30.5" r="3.4" fill="#fff"/>'
+    + '<rect x="22.4" y="31" width="3.2" height="6.4" rx="1.6" fill="#fff"/>'
+    + '</svg>';
+}
+
 // Turns Supabase/network errors into messages a student can act on.
 function friendlyAuthError(e, fallback) {
   const msg = (e && e.message) ? e.message : '';
@@ -330,6 +359,9 @@ window.goto = async function (screen) {
 window.selectSubject = async function (subjId, subjName) {
   state.selectedSubject = { id: subjId, name: subjName };
   state.papers = await db.fetchPapers(subjId);
+  try {
+    state.myAttemptedPaperIds = await db.fetchMyAttemptedPaperIds(state.currentUser.id, state.papers.map(p => p.id));
+  } catch (e) { state.myAttemptedPaperIds = []; }
   state.screen = 'papers';
   render();
 };
@@ -341,21 +373,23 @@ window.openPaper = async function (paperId) {
   state.paperDetail = paper;
   state.screens = groupConsecutive(paper.questions);
   const existingAttempt = await db.fetchMyAttempt(paperId, state.currentUser.id);
-  const isClosed = !!(paper.closesAt && Date.now() >= new Date(paper.closesAt).getTime());
-  const closedDraft = (!existingAttempt && isClosed) ? await db.fetchDraft(paperId, state.currentUser.id) : null;
+  const status = paperStatus(paper);
+  const draft = (!existingAttempt && status.kind !== 'upcoming') ? await db.fetchDraft(paperId, state.currentUser.id) : null;
   state.busy = false;
+  state.lockedKind = status.open ? '' : status.kind;
   if (existingAttempt) {
+    // Results stay viewable whatever the paper's lock state.
     await buildReview(paperId, {
       score: existingAttempt.score, total: existingAttempt.total,
       answers: existingAttempt.answers, submittedAt: existingAttempt.submitted_at,
     });
-  } else if (paper.opensAt && Date.now() < new Date(paper.opensAt).getTime()) {
-    state.lockedMessage = 'This paper opens ' + new Date(paper.opensAt).toLocaleString() + '. Come back then to start it.';
+  } else if (status.kind === 'upcoming') {
+    state.lockedMessage = 'This paper opens ' + fmtWhen(paper.opensAt) + '. Come back then to start it.';
     state.screen = 'paper_locked';
-  } else if (isClosed && closedDraft) {
+  } else if (status.kind === 'closed' && draft) {
     // Student started it but never submitted (e.g. closed the tab) and the
     // window has now closed: submit what they had, same as a timeout.
-    state.attemptAnswers = closedDraft.answers || {};
+    state.attemptAnswers = draft.answers || {};
     state.attemptIndex = 0;
     state.attemptDeadline = null;
     state.screen = 'take';
@@ -364,11 +398,16 @@ window.openPaper = async function (paperId) {
     render();
     await finalizeSubmit(true);
     return;
-  } else if (isClosed) {
-    state.lockedMessage = 'This paper closed ' + new Date(paper.closesAt).toLocaleString() + ' and can no longer be started.';
+  } else if (status.kind === 'closed') {
+    state.lockedMessage = 'This paper closed ' + fmtWhen(paper.closesAt) + ' and can no longer be started.';
+    state.screen = 'paper_locked';
+  } else if (status.kind === 'locked') {
+    // Manual lock is reversible, so an in-progress draft is kept, not submitted.
+    state.lockedMessage = draft
+      ? 'This paper has been locked by your lecturer. Your answers so far are saved, and you can carry on when it is unlocked.'
+      : 'This paper is locked. It will open when your lecturer unlocks it.';
     state.screen = 'paper_locked';
   } else {
-    const draft = await db.fetchDraft(paperId, state.currentUser.id);
     state.attemptAnswers = (draft && draft.answers) ? draft.answers : {};
     state.attemptIndex = 0;
     state.screen = 'take';
@@ -378,6 +417,21 @@ window.openPaper = async function (paperId) {
     startCountdownIfNeeded();
   }
   render();
+};
+
+window.togglePaperOpen = async function (paperId, open) {
+  if (!open && !confirm('Lock this paper? Nobody new can start it. Students already on the paper can finish unless they leave or refresh; their answers so far stay saved.')) return;
+  try {
+    await db.setPaperOpen(paperId, open);
+    if (state.screen === 'paper_locked' && state.selectedPaper === paperId) {
+      state.papers = state.selectedSubject ? await db.fetchPapers(state.selectedSubject.id) : state.papers;
+      state.screen = 'papers';
+    }
+    if (state.screen === 'papers' && state.selectedSubject) {
+      state.papers = await db.fetchPapers(state.selectedSubject.id);
+    }
+    render();
+  } catch (e) { alert(e.message); }
 };
 
 // ---------- TAKE PAPER ----------
@@ -734,8 +788,23 @@ function renderScreen() {
 }
 
 function renderPaperLocked() {
-  return '<div class="flex-between"><h1>' + esc(state.paperDetail.name) + '</h1><span class="link-a" onclick="goto(\'papers\')">← Back</span></div>'
-    + '<div class="empty"><div class="dot"></div>' + esc(state.lockedMessage) + '</div>';
+  const p = state.paperDetail;
+  const isAdmin = state.currentUser.role === 'admin';
+  const title = state.lockedKind === 'upcoming' ? 'Not open yet' : (state.lockedKind === 'closed' ? 'Closed' : 'Locked');
+  let html = '<div class="flex-between"><h1>' + esc(p.name) + '</h1><span class="link-a" onclick="goto(\'papers\')">← Back</span></div>'
+    + '<div class="lock-hero ' + esc(state.lockedKind) + '">'
+    + '<div class="lock-bubble">' + lockIcon(44) + '</div>'
+    + '<div class="lock-title">' + title + '</div>'
+    + '<p class="lock-msg">' + esc(state.lockedMessage) + '</p>';
+  if (state.lockedKind === 'upcoming' && p.closesAt) {
+    html += '<p class="lock-msg small">Open until ' + esc(fmtWhen(p.closesAt)) + '.</p>';
+  }
+  if (isAdmin && state.lockedKind === 'locked') {
+    html += '<button class="btn" style="margin-top:6px;" onclick="togglePaperOpen(\'' + p.id + '\', true)">Unlock for students</button>';
+  } else if (isAdmin && state.lockedKind !== 'locked') {
+    html += '<p class="lock-msg small">This paper runs on a schedule. Edit its open and close times from Admin to change when it is available.</p>';
+  }
+  return html + '</div>';
 }
 
 // ---------- AUTH SCREEN ----------
@@ -782,21 +851,31 @@ function renderHome() {
     ).join('') + '</div>';
 }
 
-function paperScheduleBadge(p) {
-  const now = Date.now();
-  if (p.opensAt && now < new Date(p.opensAt).getTime()) return '<div class="d" style="color:var(--accent);">Opens ' + new Date(p.opensAt).toLocaleString() + '</div>';
-  if (p.closesAt && now >= new Date(p.closesAt).getTime()) return '<div class="d" style="color:var(--danger);">Closed</div>';
-  if (p.closesAt) return '<div class="d" style="color:var(--text2);">Closes ' + new Date(p.closesAt).toLocaleString() + '</div>';
-  return '';
+function paperTile(p) {
+  const st = paperStatus(p);
+  const done = state.myAttemptedPaperIds.includes(p.id);
+  const locked = !st.open && !done;
+  let badge = '';
+  if (done) badge = '<span class="status-pill done">Completed</span>';
+  else if (st.kind === 'upcoming') badge = '<span class="status-pill locked">Opens ' + esc(fmtWhen(p.opensAt)) + '</span>';
+  else if (st.kind === 'closed') badge = '<span class="status-pill locked">Closed</span>';
+  else if (st.kind === 'locked') badge = '<span class="status-pill locked">Locked</span>';
+  else if (st.scheduled && p.closesAt) badge = '<span class="status-pill open">Open until ' + esc(fmtWhen(p.closesAt)) + '</span>';
+  else badge = '<span class="status-pill open">Open</span>';
+  const meta = p.questionCount + ' questions, pass ' + p.passMark + '%' + (p.timeLimitMinutes ? ', ' + p.timeLimitMinutes + ' min' : '');
+  return '<div class="tile' + (locked ? ' is-locked' : '') + '" onclick="openPaper(\'' + p.id + '\')">'
+    + (locked ? '<div class="swatch lock-swatch">' + lockIcon(22) + '</div>' : swatchFor(p.name))
+    + '<div class="t">' + esc(p.name) + '</div>'
+    + '<div class="d">' + meta + '</div>'
+    + '<div class="tile-status">' + badge + '</div>'
+    + '</div>';
 }
 
 function renderPapers() {
   return '<div class="flex-between"><h1>' + esc(state.selectedSubject.name) + '</h1><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>'
     + '<p class="sub">Choose a paper to begin.</p>'
     + (state.papers.length === 0 ? '<div class="empty"><div class="dot"></div>No papers in this subject yet.</div>' :
-      '<div class="grid">' + state.papers.map(p =>
-        '<div class="tile" onclick="openPaper(\'' + p.id + '\')">' + swatchFor(p.name) + '<div class="t">' + esc(p.name) + '</div><div class="d">' + p.questionCount + ' questions · pass ' + p.passMark + '%' + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min' : '') + '</div>' + paperScheduleBadge(p) + '</div>'
-      ).join('') + '</div>');
+      '<div class="grid">' + state.papers.map(paperTile).join('') + '</div>');
 }
 
 // ---------- TAKE ----------
@@ -1145,16 +1224,29 @@ async function renderAdminPapersDeferred() {
   if (!host) return;
   const papers = await db.fetchAllPapers();
   if (papers.length === 0) { host.innerHTML = '<p class="sub" style="margin:0;">No papers created yet.</p>'; return; }
-  host.innerHTML = papers.map(p =>
-    '<div class="flex-between" style="padding:10px 0; border-bottom:1px solid #ececef;">'
-    + '<div><div style="font-weight:600; font-size:14px;">' + esc(p.name) + '</div>'
-    + '<div class="sub" style="margin:0;">' + esc(p.subjectName || '—') + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min limit' : '') + '</div></div>'
-    + '<div class="row" style="flex-shrink:0;">'
-    + '<button class="btn secondary" onclick="editPaper(\'' + p.id + '\')">Edit</button>'
-    + '<button class="btn danger" onclick="deletePaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Delete</button>'
-    + '</div>'
-    + '</div>'
-  ).join('');
+  host.innerHTML = papers.map(p => {
+    const st = paperStatus(p);
+    let status, toggle = '';
+    if (st.kind === 'upcoming') status = '<span class="status-pill locked">' + lockIcon(12) + ' Opens ' + esc(fmtWhen(p.opensAt)) + '</span>';
+    else if (st.kind === 'closed') status = '<span class="status-pill locked">' + lockIcon(12) + ' Closed ' + esc(fmtWhen(p.closesAt)) + '</span>';
+    else if (st.kind === 'locked') status = '<span class="status-pill locked">' + lockIcon(12) + ' Locked</span>';
+    else status = '<span class="status-pill open">Open' + (st.scheduled && p.closesAt ? ' until ' + esc(fmtWhen(p.closesAt)) : '') + '</span>';
+    if (!st.scheduled && st.kind !== 'upcoming' && st.kind !== 'closed') {
+      toggle = p.isOpen
+        ? '<button class="btn secondary" onclick="togglePaperOpen(\'' + p.id + '\', false)">Lock</button>'
+        : '<button class="btn" onclick="togglePaperOpen(\'' + p.id + '\', true)">Unlock</button>';
+    }
+    return '<div class="admin-paper-row">'
+      + '<div style="min-width:0;"><div style="font-weight:600; font-size:14px;">' + esc(p.name) + '</div>'
+      + '<div style="font-size:13px; color:var(--text2); margin:1px 0 7px;">' + esc(p.subjectName || '—') + (p.timeLimitMinutes ? ', ' + p.timeLimitMinutes + ' min timer' : '') + ((p.opensAt || p.closesAt) ? ', scheduled' : '') + '</div>'
+      + status + '</div>'
+      + '<div class="row" style="flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">'
+      + toggle
+      + '<button class="btn secondary" onclick="editPaper(\'' + p.id + '\')">Edit</button>'
+      + '<button class="btn danger" onclick="deletePaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Delete</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
 }
 window.deletePaperConfirm = async function (paperId, paperName) {
   if (!confirm('Delete "' + paperName + '"? This permanently removes all its questions and every student\'s attempt at it. This cannot be undone.')) return;
@@ -1221,6 +1313,7 @@ function renderNewPaper() {
     + '<label class="flabel">Time limit per student, in minutes (optional — leave blank for no limit)</label><input type="number" placeholder="e.g. 60" value="' + esc(f.timeLimit) + '" oninput="updatePaperField(\'timeLimit\',this.value)">'
     + '<label class="flabel">Opens at (optional — leave blank to make it available immediately)</label><input type="datetime-local" value="' + esc(f.opens) + '" onchange="updatePaperField(\'opens\',this.value)" oninput="updatePaperField(\'opens\',this.value)">'
     + '<label class="flabel">Closes at (optional — leave blank for no scheduled close)</label><input type="datetime-local" value="' + esc(f.closes) + '" onchange="updatePaperField(\'closes\',this.value)" oninput="updatePaperField(\'closes\',this.value)">'
+    + '<p class="sub" style="margin:0 0 8px;">With open/close times set, the paper opens and closes on that schedule by itself. Without them, the paper stays locked until you press Unlock under Admin, Manage papers.</p>'
     + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.'
     + (isEdit ? ' Changing timings affects students who open the paper from now on; anyone mid-attempt keeps their current deadline until they reload.' : '')
     + '</p>'

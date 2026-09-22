@@ -80,7 +80,7 @@ export async function deleteSubject(subjectId) {
 export async function fetchPapers(subjectId) {
   const { data: papers, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, subject_id, time_limit_minutes, opens_at, closes_at')
+    .select('id, name, pass_mark, subject_id, time_limit_minutes, opens_at, closes_at, is_open')
     .eq('subject_id', subjectId)
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -103,6 +103,7 @@ export async function fetchPapers(subjectId) {
     timeLimitMinutes: p.time_limit_minutes,
     opensAt: p.opens_at,
     closesAt: p.closes_at,
+    isOpen: p.is_open,
     questionCount: screenSets[p.id] ? screenSets[p.id].size : 0,
   }));
 }
@@ -110,7 +111,7 @@ export async function fetchPapers(subjectId) {
 export async function fetchAllPapers() {
   const { data, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, time_limit_minutes, subjects(name)')
+    .select('id, name, pass_mark, time_limit_minutes, opens_at, closes_at, is_open, subjects(name)')
     .order('created_at', { ascending: false });
   if (error) throw error;
   return data.map((p) => ({
@@ -118,8 +119,28 @@ export async function fetchAllPapers() {
     name: p.name,
     passMark: p.pass_mark,
     timeLimitMinutes: p.time_limit_minutes,
+    opensAt: p.opens_at,
+    closesAt: p.closes_at,
+    isOpen: p.is_open,
     subjectName: p.subjects?.name,
   }));
+}
+
+export async function setPaperOpen(paperId, isOpen) {
+  const { error } = await supabase.from('papers').update({ is_open: isOpen }).eq('id', paperId);
+  if (error) throw error;
+}
+
+// Which of these papers has this user already submitted? (for "Completed" badges)
+export async function fetchMyAttemptedPaperIds(userId, paperIds) {
+  if (!paperIds.length) return [];
+  const { data, error } = await supabase
+    .from('attempts')
+    .select('paper_id')
+    .eq('user_id', userId)
+    .in('paper_id', paperIds);
+  if (error) throw error;
+  return data.map((r) => r.paper_id);
 }
 
 export async function deletePaper(paperId) {
@@ -231,6 +252,7 @@ export async function fetchPaperWithQuestions(paperId) {
     timeLimitMinutes: paper.time_limit_minutes,
     opensAt: paper.opens_at,
     closesAt: paper.closes_at,
+    isOpen: paper.is_open,
     questions: questions.map((q) => ({
       id: q.id,
       type: q.type,
