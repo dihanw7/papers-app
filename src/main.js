@@ -27,12 +27,32 @@ let state = {
   draftStatus: 'idle', // idle | saving | saved
   settings: { groups: [], batches: [] },
   lockedMessage: '',
+  // Paper builder / editor. editingPaperId is null when creating a new paper.
+  editingPaperId: null,
+  editingOriginalIds: [], // question ids the paper had when the editor opened
+  editingAttemptCount: 0, // how many students had already submitted when the editor opened
+  paperForm: { subjectId: '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '' },
 };
 
 function esc(s) {
   return (s === undefined || s === null) ? '' : String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
+// MTF group ids are stored in a uuid column, so they need to be real UUIDs.
+function newGroupId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+// ISO timestamp -> value for an <input type="datetime-local"> in the viewer's local time.
+function isoToLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
 
 const SWATCHES = [
   { bg: '#eef5ff', fg: '#0071e3' }, { bg: '#eafbf0', fg: '#1e8e3e' }, { bg: '#f3eefd', fg: '#7c3aed' },
@@ -366,7 +386,45 @@ window.createSubject = async function () {
   } catch (e) { alert(e.message); }
 };
 
-window.startNewPaper = function () { state.newPaperQuestions = []; state.screen = 'admin_newpaper'; render(); };
+window.startNewPaper = function () {
+  state.editingPaperId = null;
+  state.editingOriginalIds = [];
+  state.editingAttemptCount = 0;
+  state.paperForm = { subjectId: state.subjects[0] ? state.subjects[0].id : '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '' };
+  state.newPaperQuestions = [];
+  state.screen = 'admin_newpaper';
+  render();
+};
+
+window.editPaper = async function (paperId) {
+  try {
+    if (state.subjects.length === 0) state.subjects = await db.fetchSubjects();
+    const paper = await db.fetchPaperWithQuestions(paperId);
+    const attemptCount = await db.countAttempts(paperId);
+    state.editingPaperId = paperId;
+    state.editingOriginalIds = paper.questions.map(q => q.id);
+    state.editingAttemptCount = attemptCount;
+    state.paperForm = {
+      subjectId: paper.subjectId || '',
+      name: paper.name || '',
+      passMark: String(paper.passMark ?? 50),
+      timeLimit: paper.timeLimitMinutes ? String(paper.timeLimitMinutes) : '',
+      opens: isoToLocalInput(paper.opensAt),
+      closes: isoToLocalInput(paper.closesAt),
+    };
+    // Deep-copy so edits don't touch anything else holding this paper.
+    state.newPaperQuestions = paper.questions.map(q => ({
+      ...q, options: q.options.map(o => ({ ...o })), existing: true,
+    }));
+    state.screen = 'admin_newpaper';
+    render();
+    window.scrollTo(0, 0);
+  } catch (e) { alert('Could not open that paper: ' + e.message); }
+};
+
+// Paper-level fields live in state so they survive re-renders
+// (adding a question re-renders the whole page).
+window.updatePaperField = function (field, value) { state.paperForm[field] = value; };
 
 window.addBlankQuestion = function (type) {
   const q = { id: uid(), type, stem: '', correct: '', options: type === 'TF' ? [{ key: 'A', text: 'True' }, { key: 'B', text: 'False' }] : [{ key: 'A', text: '' }, { key: 'B', text: '' }, { key: 'C', text: '' }, { key: 'D', text: '' }, { key: 'E', text: '' }] };
@@ -384,7 +442,7 @@ window.setCorrect = function (qid, key) { const q = state.newPaperQuestions.find
 
 // ---------- ADMIN: MTF groups ----------
 window.addMTFGroup = function () {
-  const gid = uid();
+  const gid = newGroupId();
   const mk = (order) => ({ id: uid(), type: 'TF', stem: '', correct: '', options: [{ key: 'A', text: 'True' }, { key: 'B', text: 'False' }], groupId: gid, groupStem: '', groupOrder: order });
   state.newPaperQuestions.push(mk(0), mk(1));
   render();
@@ -405,21 +463,22 @@ window.removeGroup = function (groupId) {
   render();
 };
 
-window.saveNewPaper = async function () {
-  const subjectId = document.getElementById('np_subject').value;
-  const name = document.getElementById('np_name').value.trim();
-  const passMark = parseInt(document.getElementById('np_pass').value || '50');
-  const timeLimitRaw = document.getElementById('np_timelimit').value.trim();
+window.savePaper = async function () {
+  const f = state.paperForm;
+  const subjectId = f.subjectId;
+  const name = (f.name || '').trim();
+  const passMark = parseInt(f.passMark || '50');
+  const timeLimitRaw = (f.timeLimit || '').toString().trim();
   const timeLimitMinutes = timeLimitRaw ? parseInt(timeLimitRaw) : null;
-  const opensRaw = document.getElementById('np_opens').value;
-  const closesRaw = document.getElementById('np_closes').value;
-  const opensAt = opensRaw ? new Date(opensRaw).toISOString() : null;
-  const closesAt = closesRaw ? new Date(closesRaw).toISOString() : null;
+  const opensAt = f.opens ? new Date(f.opens).toISOString() : null;
+  const closesAt = f.closes ? new Date(f.closes).toISOString() : null;
   if (opensAt && closesAt && new Date(closesAt) <= new Date(opensAt)) {
     alert('Closes at must be after opens at.');
     return;
   }
   if (!subjectId || !name) { alert('Choose a subject and give the paper a name.'); return; }
+  if (isNaN(passMark) || passMark < 0 || passMark > 100) { alert('Pass mark must be a number from 0 to 100.'); return; }
+  if (timeLimitRaw && (isNaN(timeLimitMinutes) || timeLimitMinutes <= 0)) { alert('Time limit must be a positive number of minutes, or left blank.'); return; }
   if (state.newPaperQuestions.length === 0) { alert('Add at least one question.'); return; }
   for (const q of state.newPaperQuestions) {
     if (!q.stem.trim() || !q.correct || q.options.some(o => !o.text.trim())) {
@@ -435,6 +494,15 @@ window.saveNewPaper = async function () {
       return;
     }
   }
+  const isEdit = !!state.editingPaperId;
+  if (isEdit && state.editingAttemptCount > 0) {
+    const removedCount = state.editingOriginalIds.filter(id => !state.newPaperQuestions.some(q => q.existing && q.id === id)).length;
+    let msg = state.editingAttemptCount + ' student(s) have already submitted this paper. Their recorded scores will NOT change. '
+      + 'Their review pages will show the updated questions and answer key.';
+    if (removedCount > 0) msg += '\n\nYou are removing ' + removedCount + ' question/statement(s). Their answers to those will no longer be shown.';
+    msg += '\n\nSave changes?';
+    if (!confirm(msg)) return;
+  }
   const orderCounters = {};
   state.newPaperQuestions.forEach(q => {
     if (q.groupId) {
@@ -442,12 +510,20 @@ window.saveNewPaper = async function () {
       q.groupOrder = orderCounters[q.groupId];
     }
   });
+  const fields = { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt };
   state.busy = true; render();
   try {
-    const paper = await db.createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt });
-    await db.addQuestions(paper.id, state.newPaperQuestions);
+    if (isEdit) {
+      await db.updatePaper(state.editingPaperId, fields);
+      await db.saveEditedQuestions(state.editingPaperId, state.newPaperQuestions, state.editingOriginalIds);
+    } else {
+      const paper = await db.createPaper(fields);
+      await db.addQuestions(paper.id, state.newPaperQuestions);
+    }
+    analyticsCache = null; // make analytics refetch the updated paper
     state.busy = false;
-    alert('Paper saved.');
+    state.editingPaperId = null;
+    alert(isEdit ? 'Changes saved.' : 'Paper saved.');
     state.screen = 'admin';
     state.adminTab = 'papers';
     render();
@@ -485,7 +561,7 @@ window.handleExcelUpload = function (evt) {
           if (!statement) return;
           if (stem !== lastGroupStem) {
             lastGroupStem = stem;
-            lastGroupId = uid();
+            lastGroupId = newGroupId();
             groupOrderCounter = 0;
           }
           const correctRaw = (norm['correct'] || norm['answer'] || '').toString().trim().toUpperCase();
@@ -1016,7 +1092,10 @@ async function renderAdminPapersDeferred() {
     '<div class="flex-between" style="padding:10px 0; border-bottom:1px solid #ececef;">'
     + '<div><div style="font-weight:600; font-size:14px;">' + esc(p.name) + '</div>'
     + '<div class="sub" style="margin:0;">' + esc(p.subjectName || '—') + (p.timeLimitMinutes ? ' · ' + p.timeLimitMinutes + ' min limit' : '') + '</div></div>'
+    + '<div class="row" style="flex-shrink:0;">'
+    + '<button class="btn secondary" onclick="editPaper(\'' + p.id + '\')">Edit</button>'
     + '<button class="btn danger" onclick="deletePaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Delete</button>'
+    + '</div>'
     + '</div>'
   ).join('');
 }
@@ -1069,17 +1148,25 @@ function renderAdmin() {
 }
 
 function renderNewPaper() {
-  let html = '<div class="flex-between"><h1>New paper</h1><span class="link-a" onclick="goto(\'admin\')">← Cancel</span></div>'
+  const f = state.paperForm;
+  if (!f.subjectId && state.subjects[0]) f.subjectId = state.subjects[0].id; // match what the dropdown shows
+  const isEdit = !!state.editingPaperId;
+  let html = '<div class="flex-between"><h1>' + (isEdit ? 'Edit paper' : 'New paper') + '</h1><span class="link-a" onclick="goto(\'admin\')">← Cancel</span></div>'
+    + (isEdit && state.editingAttemptCount > 0
+      ? '<div class="timeout-banner">' + state.editingAttemptCount + ' student(s) have already submitted this paper. You can still edit it, but their recorded scores won\'t change. Fixing typos and timings is safe; changing answer keys or removing questions will make their review pages differ from their score.</div>'
+      : '')
     + '<div class="card">'
-    + '<label class="flabel">Subject</label><select id="np_subject">'
-    + state.subjects.map(s => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join('')
+    + '<label class="flabel">Subject</label><select onchange="updatePaperField(\'subjectId\',this.value)">'
+    + state.subjects.map(s => '<option value="' + s.id + '" ' + (f.subjectId === s.id ? 'selected' : '') + '>' + esc(s.name) + '</option>').join('')
     + '</select>'
-    + '<label class="flabel">Paper name</label><input id="np_name" placeholder="e.g. Mock 01">'
-    + '<label class="flabel">Pass mark (%)</label><input id="np_pass" type="number" value="50">'
-    + '<label class="flabel">Time limit per student, in minutes (optional — leave blank for no limit)</label><input id="np_timelimit" type="number" placeholder="e.g. 60">'
-    + '<label class="flabel">Opens at (optional — leave blank to make it available immediately)</label><input id="np_opens" type="datetime-local">'
-    + '<label class="flabel">Closes at (optional — leave blank for no scheduled close)</label><input id="np_closes" type="datetime-local">'
-    + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.</p>'
+    + '<label class="flabel">Paper name</label><input placeholder="e.g. Mock 01" value="' + esc(f.name) + '" oninput="updatePaperField(\'name\',this.value)">'
+    + '<label class="flabel">Pass mark (%)</label><input type="number" value="' + esc(f.passMark) + '" oninput="updatePaperField(\'passMark\',this.value)">'
+    + '<label class="flabel">Time limit per student, in minutes (optional — leave blank for no limit)</label><input type="number" placeholder="e.g. 60" value="' + esc(f.timeLimit) + '" oninput="updatePaperField(\'timeLimit\',this.value)">'
+    + '<label class="flabel">Opens at (optional — leave blank to make it available immediately)</label><input type="datetime-local" value="' + esc(f.opens) + '" onchange="updatePaperField(\'opens\',this.value)" oninput="updatePaperField(\'opens\',this.value)">'
+    + '<label class="flabel">Closes at (optional — leave blank for no scheduled close)</label><input type="datetime-local" value="' + esc(f.closes) + '" onchange="updatePaperField(\'closes\',this.value)" oninput="updatePaperField(\'closes\',this.value)">'
+    + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.'
+    + (isEdit ? ' Changing timings affects students who open the paper from now on; anyone mid-attempt keeps their current deadline until they reload.' : '')
+    + '</p>'
     + '</div>'
     + '<div class="card"><h2>Import from Excel</h2>'
     + '<p class="sub">Columns: <b>Type</b> (SBA, TF, or MTF), <b>Stem</b>, <b>Statement</b> (MTF only — one row per statement, same Stem repeated for the whole group), <b>OptionA</b>–<b>OptionE</b> (SBA only), <b>Correct</b> (a letter for SBA, or True/False for TF and MTF rows).</p>'
@@ -1122,6 +1209,6 @@ function renderNewPaper() {
   });
   html += (state.newPaperQuestions.length === 0 ? '<div class="empty">No questions yet — add one above or import an Excel file.</div>' : '')
     + '</div>'
-    + '<button class="btn block" onclick="saveNewPaper()">Save paper</button>';
+    + '<button class="btn block" onclick="savePaper()" ' + (state.busy ? 'disabled' : '') + '>' + (state.busy ? 'Saving…' : (isEdit ? 'Save changes' : 'Save paper')) + '</button>';
   return html;
 }

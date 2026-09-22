@@ -142,8 +142,8 @@ export async function createPaper({ subjectId, name, passMark, timeLimitMinutes,
   return data;
 }
 
-export async function addQuestions(paperId, questions) {
-  const rows = questions.map((q, idx) => ({
+function questionToRow(paperId, q, idx) {
+  return {
     paper_id: paperId,
     type: q.type,
     stem: q.stem,
@@ -151,11 +151,67 @@ export async function addQuestions(paperId, questions) {
     correct: q.correct,
     position: idx,
     group_id: q.groupId || null,
-    group_stem: q.groupStem || null,
+    group_stem: q.groupId ? (q.groupStem || null) : null,
     group_order: q.groupId ? (q.groupOrder ?? idx) : null,
-  }));
+  };
+}
+
+export async function addQuestions(paperId, questions) {
+  const rows = questions.map((q, idx) => questionToRow(paperId, q, idx));
   const { error } = await supabase.from('questions').insert(rows);
   if (error) throw error;
+}
+
+export async function updatePaper(paperId, { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt }) {
+  const { error } = await supabase
+    .from('papers')
+    .update({
+      subject_id: subjectId, name, pass_mark: passMark,
+      time_limit_minutes: timeLimitMinutes || null,
+      opens_at: opensAt || null,
+      closes_at: closesAt || null,
+    })
+    .eq('id', paperId);
+  if (error) throw error;
+}
+
+// Saves an edited question list for an existing paper.
+// - Questions that already existed keep their original id (updated in place),
+//   so students' submitted answers stay linked to them.
+// - Brand-new questions are inserted.
+// - Questions that were removed in the editor are deleted.
+// Positions are rewritten to match the editor's order.
+export async function saveEditedQuestions(paperId, questions, originalIds) {
+  const existingRows = [];
+  const newRows = [];
+  questions.forEach((q, idx) => {
+    const row = questionToRow(paperId, q, idx);
+    if (q.existing) existingRows.push({ id: q.id, ...row });
+    else newRows.push(row);
+  });
+  if (existingRows.length) {
+    const { error } = await supabase.from('questions').upsert(existingRows, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  if (newRows.length) {
+    const { error } = await supabase.from('questions').insert(newRows);
+    if (error) throw error;
+  }
+  const kept = new Set(existingRows.map((r) => r.id));
+  const removed = originalIds.filter((id) => !kept.has(id));
+  if (removed.length) {
+    const { error } = await supabase.from('questions').delete().in('id', removed);
+    if (error) throw error;
+  }
+}
+
+export async function countAttempts(paperId) {
+  const { count, error } = await supabase
+    .from('attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('paper_id', paperId);
+  if (error) throw error;
+  return count || 0;
 }
 
 export async function fetchPaperWithQuestions(paperId) {
