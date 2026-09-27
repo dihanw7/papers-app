@@ -429,31 +429,51 @@ window.openPaper = async function (paperId) {
       ? 'This paper has been locked by your lecturer. Your answers so far are saved, and you can carry on when it is unlocked.'
       : 'This paper is locked. It will open when your lecturer unlocks it.';
     state.screen = 'paper_locked';
+  } else if (!draft) {
+    // First time in: show the start screen. The clock only starts when they
+    // press Start paper (start_attempt records the start time).
+    state.screen = 'paper_start';
   } else {
-    // Record the start time on the server (first open only) and sync clocks.
-    let started = null;
-    try {
-      started = await db.startAttempt(paperId);
-    } catch (e) {
-      state.lockedKind = 'locked';
-      state.lockedMessage = e.message || 'This paper could not be opened.';
-      state.screen = 'paper_locked';
-      render();
-      return;
-    }
-    state.attemptStartedAt = started ? new Date(started.startedAt).getTime() : null;
-    state.clockOffset = started ? new Date(started.serverNow).getTime() - Date.now() : 0;
-    const saved = started ? started.answers : (draft && draft.answers);
-    state.attemptAnswers = saved ? { ...saved } : {};
-    state.attemptIndex = 0;
-    state.screen = 'take';
-    state.draftStatus = 'idle';
-    state.submitError = '';
-    state.answersLocked = false;
-    startCountdownIfNeeded();
+    // Already started (their clock is running): go straight back in.
+    await enterPaper(paperId, draft);
+    return;
   }
   render();
 };
+
+window.beginPaper = async function () {
+  if (state.busy) return;
+  state.busy = true; render();
+  await enterPaper(state.selectedPaper, null);
+};
+
+// Starts (or resumes) the attempt and shows the questions.
+async function enterPaper(paperId, draft) {
+  // Record the start time on the server (first open only) and sync clocks.
+  let started = null;
+  try {
+    started = await db.startAttempt(paperId);
+  } catch (e) {
+    state.busy = false;
+    state.lockedKind = 'locked';
+    state.lockedMessage = e.message || 'This paper could not be opened.';
+    state.screen = 'paper_locked';
+    render();
+    return;
+  }
+  state.attemptStartedAt = started ? new Date(started.startedAt).getTime() : null;
+  state.clockOffset = started ? new Date(started.serverNow).getTime() - Date.now() : 0;
+  const saved = started ? started.answers : (draft && draft.answers);
+  state.attemptAnswers = saved ? { ...saved } : {};
+  state.attemptIndex = 0;
+  state.screen = 'take';
+  state.draftStatus = 'idle';
+  state.submitError = '';
+  state.answersLocked = false;
+  state.busy = false;
+  startCountdownIfNeeded();
+  render();
+}
 
 window.togglePaperOpen = async function (paperId, open) {
   if (!open && !confirm('Lock this paper? Nobody new can start it, and students part-way through can no longer change answers. Their answers saved so far are kept, and count if they submit.')) return;
@@ -823,6 +843,7 @@ function renderFooter() {
 }
 
 const ICONS = {
+  play: '<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
   subjects: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg>',
   analytics: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"/><path d="M12 20V4"/><path d="M20 20v-7"/></svg>',
   admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
@@ -856,11 +877,51 @@ function renderScreen() {
     case 'take': return renderTake();
     case 'review': return '<div id="reviewhost">Loading results…</div>';
     case 'paper_locked': return renderPaperLocked();
+    case 'paper_start': return renderPaperStart();
     case 'analytics': return renderAnalyticsShell();
     case 'admin': return renderAdmin();
     case 'admin_newpaper': return renderNewPaper();
     default: return '';
   }
+}
+
+function renderPaperStart() {
+  const p = state.paperDetail;
+  const subject = state.selectedSubject ? (state.subjects.find(s => s.id === state.selectedSubject.id) || state.selectedSubject) : null;
+  const icon = subject && subjectIconSrc(subject);
+  const minsToClose = p.closesAt ? Math.floor((new Date(p.closesAt).getTime() - Date.now()) / 60000) : null;
+
+  let timing;
+  if (p.timeLimitMinutes && p.closesAt && minsToClose < p.timeLimitMinutes) {
+    timing = 'The paper closes ' + fmtWhen(p.closesAt) + ', so you will have about ' + Math.max(minsToClose, 0) + ' minutes, not the full ' + p.timeLimitMinutes + '.';
+  } else if (p.timeLimitMinutes) {
+    timing = 'You have ' + p.timeLimitMinutes + ' minutes. The timer starts when you press Start paper and keeps running if you leave or refresh the page.';
+  } else if (p.closesAt) {
+    timing = 'You can work on it until the paper closes ' + fmtWhen(p.closesAt) + '.';
+  } else {
+    timing = 'There is no time limit.';
+  }
+
+  const facts = [];
+  if (state.selectedSubject) facts.push(['Subject', state.selectedSubject.name]);
+  facts.push(['Questions', String(state.screens.length)]);
+  facts.push(['Time allowed', p.timeLimitMinutes ? p.timeLimitMinutes + ' min' : 'No time limit']);
+  if (p.closesAt) facts.push(['Closes', fmtWhen(p.closesAt)]);
+  facts.push(['Pass mark', (p.passMark ?? 50) + '%']);
+
+  return '<div class="flex-between"><h1>' + esc(p.name) + '</h1><span class="link-a" onclick="goto(\'papers\')">← Back</span></div>'
+    + '<div class="lock-hero start">'
+    + (icon ? '<img class="start-icon" src="' + icon + '" alt="">' : '<div class="lock-bubble">' + ICONS.play + '</div>')
+    + '<div class="lock-title">Ready to start?</div>'
+    + '<p class="lock-msg">' + esc(timing) + '</p>'
+    + '<dl class="lock-facts">' + facts.map(([k, v]) => '<div><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>').join('') + '</dl>'
+    + '<ul class="start-rules">'
+    + '<li>Your answers save automatically as you go.</li>'
+    + '<li>You can only submit once. After that your answers can\'t be changed.</li>'
+    + '<li>' + (p.resultsAfterClose ? 'Your score and the answers will be shown after the paper closes.' : 'You will see your score and the answers straight after submitting.') + '</li>'
+    + '</ul>'
+    + '<button class="btn start-btn" onclick="beginPaper()" ' + (state.busy ? 'disabled' : '') + '>' + (state.busy ? 'Starting…' : 'Start paper') + '</button>'
+    + '</div>';
 }
 
 function renderPaperLocked() {
