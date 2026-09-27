@@ -227,3 +227,6 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
   .admin-paper-row{flex-direction:column; align-items:stretch;}
   .admin-paper-row .row{justify-content:flex-start !important;}
 }
+.check-row{display:flex; gap:10px; align-items:flex-start; margin-top:16px; font-size:15px; line-height:1.4; cursor:pointer;}
+.check-row input{width:auto; margin:3px 0 0; flex-shrink:0;}
+.check-row small{color:var(--text2); font-size:13px;}

@@ -1,5 +1,11 @@
 import { supabase, medNoToEmail } from './supabaseClient.js';
 
+// True when a database function doesn't exist yet (its migration hasn't been
+// run), so callers can fall back to the older direct-table behaviour.
+function isMissingFn(error) {
+  return error && (error.code === 'PGRST202' || error.code === '42883');
+}
+
 // ---------- SETTINGS (drives sign-up form dropdowns) ----------
 export async function fetchSettings() {
   const { data, error } = await supabase.from('app_settings').select('groups, batches').eq('id', true).single();
@@ -80,7 +86,7 @@ export async function deleteSubject(subjectId) {
 export async function fetchPapers(subjectId) {
   const { data: papers, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, subject_id, time_limit_minutes, opens_at, closes_at, is_open')
+    .select('*')
     .eq('subject_id', subjectId)
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -95,6 +101,7 @@ export async function fetchPapers(subjectId) {
     opensAt: p.opens_at,
     closesAt: p.closes_at,
     isOpen: p.is_open,
+    resultsAfterClose: !!p.results_after_close,
     questionCount: counts[p.id] || 0,
   }));
 }
@@ -125,7 +132,7 @@ export async function fetchQuestionCounts(paperIds) {
 export async function fetchAllPapers() {
   const { data, error } = await supabase
     .from('papers')
-    .select('id, name, pass_mark, time_limit_minutes, opens_at, closes_at, is_open, subjects(name)')
+    .select('*, subjects(name)')
     .order('created_at', { ascending: false });
   if (error) throw error;
   return data.map((p) => ({
@@ -136,6 +143,7 @@ export async function fetchAllPapers() {
     opensAt: p.opens_at,
     closesAt: p.closes_at,
     isOpen: p.is_open,
+    resultsAfterClose: !!p.results_after_close,
     subjectName: p.subjects?.name,
   }));
 }
@@ -162,7 +170,7 @@ export async function deletePaper(paperId) {
   if (error) throw error;
 }
 
-export async function createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt }) {
+export async function createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose }) {
   const { data, error } = await supabase
     .from('papers')
     .insert({
@@ -170,6 +178,7 @@ export async function createPaper({ subjectId, name, passMark, timeLimitMinutes,
       time_limit_minutes: timeLimitMinutes || null,
       opens_at: opensAt || null,
       closes_at: closesAt || null,
+      results_after_close: !!resultsAfterClose,
     })
     .select()
     .single();
@@ -197,7 +206,7 @@ export async function addQuestions(paperId, questions) {
   if (error) throw error;
 }
 
-export async function updatePaper(paperId, { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt }) {
+export async function updatePaper(paperId, { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose }) {
   const { error } = await supabase
     .from('papers')
     .update({
@@ -205,6 +214,7 @@ export async function updatePaper(paperId, { subjectId, name, passMark, timeLimi
       time_limit_minutes: timeLimitMinutes || null,
       opens_at: opensAt || null,
       closes_at: closesAt || null,
+      results_after_close: !!resultsAfterClose,
     })
     .eq('id', paperId);
   if (error) throw error;
@@ -252,12 +262,19 @@ export async function countAttempts(paperId) {
 export async function fetchPaperWithQuestions(paperId) {
   const { data: paper, error: pErr } = await supabase.from('papers').select('*').eq('id', paperId).single();
   if (pErr) throw pErr;
-  const { data: questions, error: qErr } = await supabase
-    .from('questions')
-    .select('*')
-    .eq('paper_id', paperId)
-    .order('position');
-  if (qErr) throw qErr;
+  // Students get questions through get_paper_questions(), which leaves out the
+  // answer key until results are released.
+  let questions;
+  const { data: rpcQs, error: rpcErr } = await supabase.rpc('get_paper_questions', { pid: paperId });
+  if (!rpcErr) {
+    questions = rpcQs || [];
+  } else if (isMissingFn(rpcErr)) {
+    const { data, error: qErr } = await supabase.from('questions').select('*').eq('paper_id', paperId).order('position');
+    if (qErr) throw qErr;
+    questions = data;
+  } else {
+    throw rpcErr;
+  }
   return {
     id: paper.id,
     name: paper.name,
@@ -267,12 +284,15 @@ export async function fetchPaperWithQuestions(paperId) {
     opensAt: paper.opens_at,
     closesAt: paper.closes_at,
     isOpen: paper.is_open,
+    resultsAfterClose: !!paper.results_after_close,
+    // False while the answer key is being withheld from this student.
+    answersRevealed: questions.every((q) => 'correct' in q),
     questions: questions.map((q) => ({
       id: q.id,
       type: q.type,
       stem: q.stem,
       options: q.options,
-      correct: q.correct,
+      correct: q.correct ?? null,
       groupId: q.group_id || null,
       groupStem: q.group_stem || null,
       groupOrder: q.group_order,
@@ -292,7 +312,22 @@ export async function fetchDraft(paperId, userId) {
   return data;
 }
 
+// Records when this student started (server clock) the first time they open
+// the paper. Returns { startedAt, serverNow, answers }, or null if the
+// database doesn't have start_attempt() yet.
+export async function startAttempt(paperId) {
+  const { data, error } = await supabase.rpc('start_attempt', { pid: paperId });
+  if (error) {
+    if (isMissingFn(error)) return null;
+    throw error;
+  }
+  return { startedAt: data.started_at, serverNow: data.server_now, answers: data.answers || {} };
+}
+
 export async function saveDraft(paperId, userId, answers) {
+  const { error: rpcErr } = await supabase.rpc('save_draft', { pid: paperId, p_answers: answers });
+  if (!rpcErr) return;
+  if (!isMissingFn(rpcErr)) throw rpcErr;
   const { error } = await supabase
     .from('draft_attempts')
     .upsert({ paper_id: paperId, user_id: userId, answers, updated_at: new Date().toISOString() }, { onConflict: 'paper_id,user_id' });
@@ -316,7 +351,12 @@ export async function fetchMyAttempt(paperId, userId) {
   return data;
 }
 
+// The database marks the answers (submit_attempt). score/total are only used
+// by the fallback for databases that don't have that function yet.
 export async function submitAttempt({ paperId, userId, answers, score, total }) {
+  const { data: marked, error: rpcErr } = await supabase.rpc('submit_attempt', { pid: paperId, p_answers: answers });
+  if (!rpcErr) return marked;
+  if (!isMissingFn(rpcErr)) throw rpcErr;
   const { data, error } = await supabase
     .from('attempts')
     .insert({ paper_id: paperId, user_id: userId, answers, score, total })

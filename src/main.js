@@ -23,6 +23,8 @@ let state = {
   analyticsTypeFilter: 'all', // all | SBA | TF | MTF
   analyticsViewingAttempt: null,
   attemptDeadline: null,
+  attemptStartedAt: null, // ms, server clock; null if the database can't record it
+  clockOffset: 0, // server time minus this device's time, in ms
   timedOut: false,
   draftStatus: 'idle', // idle | saving | saved
   settings: { groups: [], batches: [] },
@@ -35,7 +37,7 @@ let state = {
   editingPaperId: null,
   editingOriginalIds: [], // question ids the paper had when the editor opened
   editingAttemptCount: 0, // how many students had already submitted when the editor opened
-  paperForm: { subjectId: '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '' },
+  paperForm: { subjectId: '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '', resultsAfterClose: true },
 };
 
 function esc(s) {
@@ -152,6 +154,9 @@ function scheduleDraftSave() {
     }
   }, 700);
 }
+// Deadlines come from the server, so count down against the server's clock
+// (a student changing their device clock doesn't buy extra time).
+function serverNow() { return Date.now() + state.clockOffset; }
 function timerStorageKey(paperId) { return 'papers_attempt_start_' + paperId + '_' + state.currentUser.id; }
 function clearCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
 function formatCountdown(ms) {
@@ -240,13 +245,14 @@ function startCountdownIfNeeded() {
   const paper = state.paperDetail;
   let deadline = null;
   if (paper.timeLimitMinutes) {
-    const key = timerStorageKey(paper.id);
-    let startedAt = localStorage.getItem(key);
-    if (!startedAt) {
-      startedAt = Date.now().toString();
-      localStorage.setItem(key, startedAt);
+    let startedAt = state.attemptStartedAt;
+    if (startedAt == null) {
+      // Older database without start_attempt(): fall back to this device's record.
+      const key = timerStorageKey(paper.id);
+      startedAt = parseInt(localStorage.getItem(key) || '0', 10);
+      if (!startedAt) { startedAt = Date.now(); localStorage.setItem(key, String(startedAt)); }
     }
-    deadline = parseInt(startedAt, 10) + paper.timeLimitMinutes * 60000;
+    deadline = startedAt + paper.timeLimitMinutes * 60000;
   }
   if (paper.closesAt) {
     const closesMs = new Date(paper.closesAt).getTime();
@@ -254,13 +260,13 @@ function startCountdownIfNeeded() {
   }
   state.attemptDeadline = deadline;
   if (!deadline) return; // no time pressure at all
-  if (Date.now() >= deadline) {
+  if (serverNow() >= deadline) {
     autoSubmitOnTimeout();
     return;
   }
   countdownTimer = setInterval(() => {
     if (state.screen !== 'take') { clearCountdown(); return; }
-    if (Date.now() >= state.attemptDeadline) { autoSubmitOnTimeout(); }
+    if (serverNow() >= state.attemptDeadline) { autoSubmitOnTimeout(); }
     else { render(); }
   }, 1000);
 }
@@ -413,7 +419,21 @@ window.openPaper = async function (paperId) {
       : 'This paper is locked. It will open when your lecturer unlocks it.';
     state.screen = 'paper_locked';
   } else {
-    state.attemptAnswers = (draft && draft.answers) ? draft.answers : {};
+    // Record the start time on the server (first open only) and sync clocks.
+    let started = null;
+    try {
+      started = await db.startAttempt(paperId);
+    } catch (e) {
+      state.lockedKind = 'locked';
+      state.lockedMessage = e.message || 'This paper could not be opened.';
+      state.screen = 'paper_locked';
+      render();
+      return;
+    }
+    state.attemptStartedAt = started ? new Date(started.startedAt).getTime() : null;
+    state.clockOffset = started ? new Date(started.serverNow).getTime() - Date.now() : 0;
+    const saved = started ? started.answers : (draft && draft.answers);
+    state.attemptAnswers = saved ? { ...saved } : {};
     state.attemptIndex = 0;
     state.screen = 'take';
     state.draftStatus = 'idle';
@@ -425,7 +445,7 @@ window.openPaper = async function (paperId) {
 };
 
 window.togglePaperOpen = async function (paperId, open) {
-  if (!open && !confirm('Lock this paper? Nobody new can start it. Students already on the paper can finish unless they leave or refresh; their answers so far stay saved.')) return;
+  if (!open && !confirm('Lock this paper? Nobody new can start it, and students part-way through can no longer change answers. Their answers saved so far are kept, and count if they submit.')) return;
   try {
     await db.setPaperOpen(paperId, open);
     if (state.screen === 'paper_locked' && state.selectedPaper === paperId) {
@@ -464,7 +484,8 @@ window.submitPaper = async function () {
 };
 
 async function buildReview(paperId, attempt) {
-  const paper = (state.paperDetail && state.paperDetail.id === paperId) ? state.paperDetail : await db.fetchPaperWithQuestions(paperId);
+  // Always refetch: the answer key may only become visible after submitting.
+  const paper = await db.fetchPaperWithQuestions(paperId);
   state.paperDetail = paper;
   state.screens = groupConsecutive(paper.questions);
   const all = await db.fetchAllAttempts(paperId);
@@ -504,7 +525,7 @@ window.startNewPaper = function () {
   state.editingPaperId = null;
   state.editingOriginalIds = [];
   state.editingAttemptCount = 0;
-  state.paperForm = { subjectId: state.subjects[0] ? state.subjects[0].id : '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '' };
+  state.paperForm = { subjectId: state.subjects[0] ? state.subjects[0].id : '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '', resultsAfterClose: true };
   state.newPaperQuestions = [];
   state.screen = 'admin_newpaper';
   render();
@@ -525,6 +546,7 @@ window.editPaper = async function (paperId) {
       timeLimit: paper.timeLimitMinutes ? String(paper.timeLimitMinutes) : '',
       opens: isoToLocalInput(paper.opensAt),
       closes: isoToLocalInput(paper.closesAt),
+      resultsAfterClose: paper.resultsAfterClose,
     };
     // Deep-copy so edits don't touch anything else holding this paper.
     state.newPaperQuestions = paper.questions.map(q => ({
@@ -624,7 +646,7 @@ window.savePaper = async function () {
       q.groupOrder = orderCounters[q.groupId];
     }
   });
-  const fields = { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt };
+  const fields = { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose: !!f.resultsAfterClose };
   state.busy = true; render();
   try {
     if (isEdit) {
@@ -924,7 +946,7 @@ function renderTake() {
 
   return '<div class="flex-between"><h2>' + esc(state.paperDetail.name) + '</h2>'
     + '<div class="row" style="gap:10px; align-items:center;">'
-    + (state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - Date.now()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - Date.now()) + '</span>' : '')
+    + (state.attemptDeadline ? '<span class="timer-pill' + ((state.attemptDeadline - serverNow()) < 60000 ? ' low' : '') + '">' + formatCountdown(state.attemptDeadline - serverNow()) + '</span>' : '')
     + (state.draftStatus === 'saving' ? '<span style="font-size:12px;color:var(--text2);">Saving…</span>' : (state.draftStatus === 'saved' ? '<span style="font-size:12px;color:var(--text2);">Saved</span>' : ''))
     + '<span style="font-size:13px;color:var(--text2);">' + answeredCount + ' / ' + totalItems + ' answered</span>'
     + '</div></div>'
@@ -1029,6 +1051,22 @@ function renderReviewDeferred() {
   if (!host || !state.reviewData) return;
   const { attempt, allCount, dist } = state.reviewData;
   const paper = state.paperDetail;
+  if (!paper.answersRevealed) {
+    // Results are held back until the paper closes (see results_after_close).
+    let html = '<div class="flex-between"><h2>' + esc(paper.name) + '</h2><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>';
+    if (state.timedOut) {
+      html += '<div class="timeout-banner">Time ran out — your answers were submitted automatically.</div>';
+      state.timedOut = false;
+    }
+    html += '<div class="lock-hero upcoming"><div class="lock-bubble">' + lockIcon(44) + '</div>'
+      + '<div class="lock-title">Submitted</div>'
+      + '<p class="lock-msg">Your answers were submitted ' + esc(new Date(attempt.submittedAt).toLocaleString()) + ' and can no longer be changed.</p>'
+      + '<p class="lock-msg">Your score and the answers will be shown here '
+      + (paper.closesAt ? 'after the paper closes on ' + esc(fmtWhen(paper.closesAt)) : 'once the paper is closed') + '.</p>'
+      + '</div>';
+    host.innerHTML = html;
+    return;
+  }
   const pct = Math.round(attempt.score / attempt.total * 100);
   const passed = pct >= (paper.passMark || 50);
 
@@ -1115,8 +1153,13 @@ async function renderAnalyticsResult() {
     all.forEach(a => { paper.questions.forEach(q => { const ans = a.answers[q.id]; if (ans && dist[q.id][ans] !== undefined) dist[q.id][ans]++; }); });
     analyticsCache = { paperId: state.analyticsPaper, paper, all, dist };
   }
-  if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>'; return; }
   const isAdmin = state.currentUser.role === 'admin';
+  if (!isAdmin && (paper.questions.length === 0 || !paper.answersRevealed)) {
+    resHost.innerHTML = '<div class="empty"><div class="dot"></div>Results for this paper will be available once it has closed'
+      + (paper.questions.length === 0 ? ', for papers you have taken' : '') + '.</div>';
+    return;
+  }
+  if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>'; return; }
 
   // ---- Individual student attempt viewer (admin only) ----
   if (isAdmin && state.analyticsViewingAttempt) {
@@ -1326,6 +1369,8 @@ function renderNewPaper() {
     + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.'
     + (isEdit ? ' Changing timings affects students who open the paper from now on; anyone mid-attempt keeps their current deadline until they reload.' : '')
     + '</p>'
+    + '<label class="check-row"><input type="checkbox" ' + (f.resultsAfterClose ? 'checked' : '') + ' onchange="updatePaperField(\'resultsAfterClose\',this.checked)">'
+    + '<span>Hide scores and answers until the paper closes<br><small>Recommended for exams: students who finish early can\'t share the answers. Leave unticked for practice papers so students see their results straight away.</small></span></label>'
     + '</div>'
     + '<div class="card"><h2>Import from Excel</h2>'
     + '<p class="sub">Columns: <b>Type</b> (SBA, TF, or MTF), <b>Stem</b>, <b>Statement</b> (MTF only — one row per statement, same Stem repeated for the whole group), <b>OptionA</b>–<b>OptionE</b> (SBA only), <b>Correct</b> (a letter for SBA, or True/False for TF and MTF rows).</p>'
