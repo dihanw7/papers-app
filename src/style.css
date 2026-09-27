@@ -250,3 +250,8 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .subject-grid .tile .swatch{width:72%; max-width:140px; height:auto; aspect-ratio:1; border-radius:50%; font-size:34px; margin:0 0 12px;}
 .subject-grid .tile .t{font-size:16px; line-height:1.25;}
 @media (max-width:360px){ .subject-grid{grid-template-columns:repeat(2,1fr); gap:10px;} }
+.lock-hero.start .lock-bubble{background:var(--accent-tint); color:var(--accent);}
+.start-icon{width:104px; height:104px; display:block; margin:0 auto 16px;}
+.start-rules{max-width:360px; margin:0 auto 20px; padding:0 0 0 18px; text-align:left; color:var(--text2); font-size:14px; line-height:1.5;}
+.start-rules li{margin-bottom:4px;}
+.start-btn{min-width:200px; font-size:16px;}
