@@ -1408,11 +1408,38 @@ async function renderAdminPapersDeferred() {
       + '<div class="row" style="flex-shrink:0; flex-wrap:wrap; justify-content:flex-end;">'
       + toggle
       + '<button class="btn secondary" onclick="editPaper(\'' + p.id + '\')">Edit</button>'
+      + '<button class="btn secondary" onclick="resetPaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Reset</button>'
       + '<button class="btn danger" onclick="deletePaperConfirm(\'' + p.id + '\',\'' + esc(p.name).replace(/'/g, "\\'") + '\')">Delete</button>'
       + '</div>'
       + '</div>';
   }).join('');
 }
+window.resetPaperConfirm = async function (paperId, paperName) {
+  let activity;
+  try { activity = await db.fetchPaperActivity(paperId); }
+  catch (e) { alert('Could not check this paper: ' + e.message); return; }
+  if (!activity.submitted && !activity.inProgress) {
+    alert('"' + paperName + '" has no submissions or in-progress attempts, so there is nothing to reset.');
+    return;
+  }
+  const lines = [];
+  if (activity.submitted) lines.push(activity.submitted + ' submitted attempt' + (activity.submitted === 1 ? '' : 's') + ' (scores and answers)');
+  if (activity.inProgress) lines.push(activity.inProgress + ' attempt' + (activity.inProgress === 1 ? '' : 's') + ' in progress (anyone taking it right now loses their answers)');
+  const typed = prompt('Reset "' + paperName + '"?\n\n'
+    + 'This permanently deletes:\n• ' + lines.join('\n• ') + '\n\n'
+    + 'Leaderboards and analytics for this paper will be emptied. The questions and settings are kept, and everyone can take it again from the start'
+    + ' (if it is open, straight away).\n\n'
+    + 'This cannot be undone. Type RESET to confirm.');
+  if (typed === null) return;
+  if (typed.trim().toUpperCase() !== 'RESET') { alert('Not reset — you need to type RESET to confirm.'); return; }
+  try {
+    const done = await db.resetPaper(paperId);
+    analyticsCache = null;
+    alert('"' + paperName + '" has been reset. Deleted ' + done.submitted + ' submitted and ' + done.inProgress + ' in-progress attempt(s).');
+    render();
+  } catch (e) { alert(e.message); }
+};
+
 window.deletePaperConfirm = async function (paperId, paperName) {
   if (!confirm('Delete "' + paperName + '"? This permanently removes all its questions and every student\'s attempt at it. This cannot be undone.')) return;
   try {
