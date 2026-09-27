@@ -430,3 +430,18 @@ export async function deleteMember(id) {
   const { error } = await supabase.rpc('admin_delete_member', { uid: id });
   if (error) throw error;
 }
+
+// ---------- PAPER RESET (admin only; checked again in the database) ----------
+// { submitted, inProgress } for the reset warning.
+export async function fetchPaperActivity(paperId) {
+  const { data, error } = await supabase.rpc('admin_paper_activity', { pid: paperId });
+  if (error) throw error;
+  return { submitted: data.submitted, inProgress: data.in_progress };
+}
+
+// Deletes every submission and in-progress attempt for the paper.
+export async function resetPaper(paperId) {
+  const { data, error } = await supabase.rpc('admin_reset_paper', { pid: paperId });
+  if (error) throw error;
+  return { submitted: data.submitted, inProgress: data.in_progress };
+}
