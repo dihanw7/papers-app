@@ -1,4 +1,5 @@
 import * as db from './data.js';
+import { subjectIconSrc, validateSvgUpload } from './subjectIcons.js';
 
 let state = {
   screen: 'loading',
@@ -22,6 +23,7 @@ let state = {
   analyticsExpandedQ: null,
   analyticsTypeFilter: 'all', // all | SBA | TF | MTF
   analyticsViewingAttempt: null,
+  newSubjectIcon: null, // SVG text chosen for the subject being added
   members: null, // admin Members tab; null until loaded
   memberSearch: '',
   memberEditing: null, // id of the member whose edit panel is open
@@ -106,6 +108,11 @@ const SWATCHES = [
   { bg: '#eef5ff', fg: '#0071e3' }, { bg: '#eafbf0', fg: '#1e8e3e' }, { bg: '#f3eefd', fg: '#7c3aed' },
   { bg: '#fff4e5', fg: '#c2740b' }, { bg: '#fdeef0', fg: '#c0255a' }, { bg: '#e8f8f6', fg: '#0a8a7c' },
 ];
+// A subject's icon (uploaded or built-in), or its letter tile if it has none.
+function subjectIcon(subject, cls) {
+  const src = subjectIconSrc(subject);
+  return src ? '<img class="' + (cls || 'subject-icon') + '" src="' + src + '" alt="">' : swatchFor(subject.name);
+}
 function swatchFor(str) {
   let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
   const c = SWATCHES[h % SWATCHES.length];
@@ -518,9 +525,49 @@ window.createSubject = async function () {
   const val = document.getElementById('newsubject').value.trim();
   if (!val) return;
   try {
-    await db.createSubject(val);
+    await db.createSubject(val, state.newSubjectIcon);
     state.subjects = await db.fetchSubjects();
-    document.getElementById('newsubject').value = '';
+    state.newSubjectIcon = null;
+    render();
+  } catch (e) { alert(e.message); }
+};
+
+// Reads an .svg file chosen by the admin; calls done(svgText) if it's valid.
+function readSvgFile(evt, done) {
+  const file = evt.target.files && evt.target.files[0];
+  evt.target.value = ''; // let the same file be picked again later
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result || '');
+    const problem = validateSvgUpload(text);
+    if (problem) { alert(problem); return; }
+    done(text);
+  };
+  reader.readAsText(file);
+}
+window.pickNewSubjectIcon = function (evt) {
+  const name = document.getElementById('newsubject').value;
+  readSvgFile(evt, (svg) => { state.newSubjectIcon = svg; render(); document.getElementById('newsubject').value = name; });
+};
+window.clearNewSubjectIcon = function () {
+  const name = document.getElementById('newsubject').value;
+  state.newSubjectIcon = null; render(); document.getElementById('newsubject').value = name;
+};
+window.uploadSubjectIcon = function (evt, subjectId) {
+  readSvgFile(evt, async (svg) => {
+    try {
+      await db.setSubjectIcon(subjectId, svg);
+      state.subjects = await db.fetchSubjects();
+      render();
+    } catch (e) { alert(e.message); }
+  });
+};
+window.removeSubjectIcon = async function (subjectId) {
+  if (!confirm('Remove this subject\'s uploaded icon? It will go back to the built-in icon (if its name matches one) or a letter.')) return;
+  try {
+    await db.setSubjectIcon(subjectId, null);
+    state.subjects = await db.fetchSubjects();
     render();
   } catch (e) { alert(e.message); }
 };
@@ -885,7 +932,7 @@ function renderHome() {
   }
   return '<h1>Subjects</h1><p class="sub">Choose a subject to see its papers.</p>'
     + '<div class="grid">' + state.subjects.map(s =>
-      '<div class="tile" onclick="selectSubject(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">' + swatchFor(s.name) + '<div class="t">' + esc(s.name) + '</div><div class="d">View papers</div></div>'
+      '<div class="tile" onclick="selectSubject(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">' + subjectIcon(s) + '<div class="t">' + esc(s.name) + '</div><div class="d">View papers</div></div>'
     ).join('') + '</div>';
 }
 
@@ -1341,13 +1388,23 @@ function renderAdmin() {
       + '<label class="flabel">Batches</label><input id="settings_batches" value="' + esc((state.settings.batches || []).join(', ')) + '">'
       + '<button class="btn" onclick="saveSettings()">Save</button>'
       + '</div>';
+    const previewIcon = state.newSubjectIcon ? '<img class="subject-icon small" src="data:image/svg+xml;charset=utf-8,' + encodeURIComponent(state.newSubjectIcon) + '" alt="">' : '';
     html += '<div class="card"><h2>Subjects</h2>'
+      + '<p class="sub">Paediatrics, Surgery, Medicine, Gyn &amp; Obs and Psychiatry get a built-in icon from their name. For any other subject, or to replace one, upload an SVG icon.</p>'
       + '<div class="row"><input id="newsubject" placeholder="e.g. Surgery" style="flex:1;"><button class="btn" onclick="createSubject()">Add</button></div>'
+      + '<div class="row" style="margin-top:8px; align-items:center;">' + previewIcon
+      + '<label class="btn secondary file-btn">' + (state.newSubjectIcon ? 'Change icon' : 'Choose icon (optional .svg)') + '<input type="file" accept=".svg,image/svg+xml" onchange="pickNewSubjectIcon(event)"></label>'
+      + (state.newSubjectIcon ? '<span class="link-a" onclick="clearNewSubjectIcon()">Remove</span>' : '')
+      + '</div>'
       + (state.subjects.length ? '<div style="margin-top:14px;">' + state.subjects.map(s =>
-          '<div class="flex-between" style="padding:8px 0; border-bottom:1px solid #ececef;">'
-          + '<span style="font-size:14px;">' + esc(s.name) + '</span>'
+          '<div class="subject-admin-row">'
+          + '<div class="row" style="align-items:center; min-width:0;">' + subjectIcon(s, 'subject-icon small')
+          + '<span style="font-size:14px;">' + esc(s.name) + '</span></div>'
+          + '<div class="row" style="flex-shrink:0; justify-content:flex-end; flex-wrap:wrap;">'
+          + '<label class="btn secondary file-btn">' + (s.iconSvg ? 'Replace icon' : 'Upload icon') + '<input type="file" accept=".svg,image/svg+xml" onchange="uploadSubjectIcon(event, \'' + s.id + '\')"></label>'
+          + (s.iconSvg ? '<button class="btn secondary" onclick="removeSubjectIcon(\'' + s.id + '\')">Remove icon</button>' : '')
           + '<button class="btn danger" onclick="deleteSubjectConfirm(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">Delete</button>'
-          + '</div>'
+          + '</div></div>'
         ).join('') + '</div>' : '')
       + '</div>'
       + '<div class="card"><div class="flex-between"><h2>Papers</h2><button class="btn" onclick="startNewPaper()">+ New paper</button></div>'
