@@ -170,7 +170,7 @@ export async function deletePaper(paperId) {
   if (error) throw error;
 }
 
-export async function createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose }) {
+export async function createPaper({ subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose, locked }) {
   const { data, error } = await supabase
     .from('papers')
     .insert({
@@ -179,6 +179,7 @@ export async function createPaper({ subjectId, name, passMark, timeLimitMinutes,
       opens_at: opensAt || null,
       closes_at: closesAt || null,
       results_after_close: !!resultsAfterClose,
+      is_open: !locked,
     })
     .select()
     .single();
@@ -206,7 +207,7 @@ export async function addQuestions(paperId, questions) {
   if (error) throw error;
 }
 
-export async function updatePaper(paperId, { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose }) {
+export async function updatePaper(paperId, { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose, locked }) {
   const { error } = await supabase
     .from('papers')
     .update({
@@ -215,6 +216,7 @@ export async function updatePaper(paperId, { subjectId, name, passMark, timeLimi
       opens_at: opensAt || null,
       closes_at: closesAt || null,
       results_after_close: !!resultsAfterClose,
+      is_open: !locked,
     })
     .eq('id', paperId);
   if (error) throw error;

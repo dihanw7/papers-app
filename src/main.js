@@ -44,17 +44,18 @@ function esc(s) {
   return (s === undefined || s === null) ? '' : String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 // ---------- Paper availability ----------
-// One place that decides whether a paper can be started right now.
-//  - Scheduled papers (opens_at and/or closes_at set) follow the schedule only.
-//  - Everything else (timer-only or untimed) is open only while an admin has unlocked it.
+// One place that decides whether a paper can be started right now
+// (same rule as paper_is_open_now() in the database).
+//  - Locked by an admin: closed, even inside its scheduled window.
+//  - Otherwise scheduled papers follow their open/close times, and
+//    unscheduled ones are open.
 function paperStatus(p) {
   const now = Date.now();
-  if (p.opensAt || p.closesAt) {
-    if (p.opensAt && now < new Date(p.opensAt).getTime()) return { kind: 'upcoming', open: false };
-    if (p.closesAt && now >= new Date(p.closesAt).getTime()) return { kind: 'closed', open: false };
-    return { kind: 'open', open: true, scheduled: true };
-  }
-  return p.isOpen ? { kind: 'open', open: true, scheduled: false } : { kind: 'locked', open: false };
+  const scheduled = !!(p.opensAt || p.closesAt);
+  if (p.closesAt && now >= new Date(p.closesAt).getTime()) return { kind: 'closed', open: false };
+  if (!p.isOpen) return { kind: 'locked', open: false };
+  if (p.opensAt && now < new Date(p.opensAt).getTime()) return { kind: 'upcoming', open: false };
+  return { kind: 'open', open: true, scheduled };
 }
 function fmtWhen(iso) {
   return new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
@@ -525,7 +526,8 @@ window.startNewPaper = function () {
   state.editingPaperId = null;
   state.editingOriginalIds = [];
   state.editingAttemptCount = 0;
-  state.paperForm = { subjectId: state.subjects[0] ? state.subjects[0].id : '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '', resultsAfterClose: true };
+  // locked: null until the admin touches the box, then it defaults by schedule (see formLocked).
+  state.paperForm = { subjectId: state.subjects[0] ? state.subjects[0].id : '', name: '', passMark: '50', timeLimit: '', opens: '', closes: '', resultsAfterClose: true, locked: null };
   state.newPaperQuestions = [];
   state.screen = 'admin_newpaper';
   render();
@@ -547,6 +549,7 @@ window.editPaper = async function (paperId) {
       opens: isoToLocalInput(paper.opensAt),
       closes: isoToLocalInput(paper.closesAt),
       resultsAfterClose: paper.resultsAfterClose,
+      locked: !paper.isOpen,
     };
     // Deep-copy so edits don't touch anything else holding this paper.
     state.newPaperQuestions = paper.questions.map(q => ({
@@ -646,7 +649,7 @@ window.savePaper = async function () {
       q.groupOrder = orderCounters[q.groupId];
     }
   });
-  const fields = { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose: !!f.resultsAfterClose };
+  const fields = { subjectId, name, passMark, timeLimitMinutes, opensAt, closesAt, resultsAfterClose: !!f.resultsAfterClose, locked: formLocked(f) };
   state.busy = true; render();
   try {
     if (isEdit) {
@@ -832,7 +835,7 @@ function renderPaperLocked() {
   html += '<dl class="lock-facts">' + facts.map(([k, v]) => '<div><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>').join('') + '</dl>';
   if (isAdmin && state.lockedKind === 'locked') {
     html += '<button class="btn" style="margin-top:6px;" onclick="togglePaperOpen(\'' + p.id + '\', true)">Unlock for students</button>';
-  } else if (isAdmin && state.lockedKind !== 'locked') {
+  } else if (isAdmin) {
     html += '<p class="lock-msg small">This paper runs on a schedule. Edit its open and close times from Admin to change when it is available.</p>';
   }
   return html + '</div>';
@@ -1051,7 +1054,10 @@ function renderReviewDeferred() {
   if (!host || !state.reviewData) return;
   const { attempt, allCount, dist } = state.reviewData;
   const paper = state.paperDetail;
-  if (!paper.answersRevealed) {
+  // Admins always receive the answer key, so for their own attempt apply the
+  // student rule here too; a test run then looks exactly like a student's.
+  const heldBack = !paper.answersRevealed || (paper.resultsAfterClose && paperStatus(paper).open);
+  if (heldBack) {
     // Results are held back until the paper closes (see results_after_close).
     let html = '<div class="flex-between"><h2>' + esc(paper.name) + '</h2><span class="link-a" onclick="goto(\'home\')">← Subjects</span></div>';
     if (state.timedOut) {
@@ -1283,7 +1289,7 @@ async function renderAdminPapersDeferred() {
     else if (st.kind === 'closed') status = '<span class="status-pill locked">' + lockIcon(12) + ' Closed ' + esc(fmtWhen(p.closesAt)) + '</span>';
     else if (st.kind === 'locked') status = '<span class="status-pill locked">' + lockIcon(12) + ' Locked</span>';
     else status = '<span class="status-pill open">Open' + (st.scheduled && p.closesAt ? ' until ' + esc(fmtWhen(p.closesAt)) : '') + '</span>';
-    if (!st.scheduled && st.kind !== 'upcoming' && st.kind !== 'closed') {
+    if (st.kind !== 'closed') {
       toggle = p.isOpen
         ? '<button class="btn secondary" onclick="togglePaperOpen(\'' + p.id + '\', false)">Lock</button>'
         : '<button class="btn" onclick="togglePaperOpen(\'' + p.id + '\', true)">Unlock</button>';
@@ -1348,6 +1354,12 @@ function renderAdmin() {
   return html;
 }
 
+// New papers start locked unless they have a schedule to follow, until the
+// admin sets the box themselves.
+function formLocked(f) {
+  return f.locked === null || f.locked === undefined ? !(f.opens || f.closes) : !!f.locked;
+}
+
 function renderNewPaper() {
   const f = state.paperForm;
   if (!f.subjectId && state.subjects[0]) f.subjectId = state.subjects[0].id; // match what the dropdown shows
@@ -1365,10 +1377,12 @@ function renderNewPaper() {
     + '<label class="flabel">Time limit per student, in minutes (optional — leave blank for no limit)</label><input type="number" placeholder="e.g. 60" value="' + esc(f.timeLimit) + '" oninput="updatePaperField(\'timeLimit\',this.value)">'
     + '<label class="flabel">Opens at (optional — leave blank to make it available immediately)</label><input type="datetime-local" value="' + esc(f.opens) + '" onchange="updatePaperField(\'opens\',this.value)" oninput="updatePaperField(\'opens\',this.value)">'
     + '<label class="flabel">Closes at (optional — leave blank for no scheduled close)</label><input type="datetime-local" value="' + esc(f.closes) + '" onchange="updatePaperField(\'closes\',this.value)" oninput="updatePaperField(\'closes\',this.value)">'
-    + '<p class="sub" style="margin:0 0 8px;">With open/close times set, the paper opens and closes on that schedule by itself. Without them, the paper stays locked until you press Unlock under Admin, Manage papers.</p>'
+    + '<p class="sub" style="margin:0 0 8px;">With open/close times set, the paper opens and closes on that schedule by itself (unless it is locked below). Without them, it is open whenever it is unlocked.</p>'
     + '<p class="sub" style="margin:0;">If both a time limit and a close time are set, whichever runs out first ends the attempt.'
     + (isEdit ? ' Changing timings affects students who open the paper from now on; anyone mid-attempt keeps their current deadline until they reload.' : '')
     + '</p>'
+    + '<label class="check-row"><input type="checkbox" ' + (formLocked(f) ? 'checked' : '') + ' onchange="updatePaperField(\'locked\',this.checked)">'
+    + '<span>Locked<br><small>Students can\'t open a locked paper, even during its scheduled time. Untick it (or press Unlock under Manage papers) to let them in.</small></span></label>'
     + '<label class="check-row"><input type="checkbox" ' + (f.resultsAfterClose ? 'checked' : '') + ' onchange="updatePaperField(\'resultsAfterClose\',this.checked)">'
     + '<span>Hide scores and answers until the paper closes<br><small>Recommended for exams: students who finish early can\'t share the answers. Leave unticked for practice papers so students see their results straight away.</small></span></label>'
     + '</div>'
