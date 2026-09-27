@@ -926,7 +926,7 @@ function renderHome() {
       + (state.currentUser.role === 'admin' ? 'Head to <b>Admin</b> to add your first subject and paper.' : 'Ask your admin to add a subject and paper to get started.') + '</div>';
   }
   return '<h1>Subjects</h1><p class="sub">Choose a subject to see its papers.</p>'
-    + '<div class="grid">' + state.subjects.map(s =>
+    + '<div class="grid subject-grid">' + state.subjects.map(s =>
       '<div class="tile" onclick="selectSubject(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">' + subjectIcon(s) + '<div class="t">' + esc(s.name) + '</div><div class="d">View papers</div></div>'
     ).join('') + '</div>';
 }
