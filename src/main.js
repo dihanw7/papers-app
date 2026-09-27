@@ -1,5 +1,5 @@
 import * as db from './data.js';
-import { subjectIconSrc, validateSvgUpload } from './subjectIcons.js';
+import { subjectIconSrc, readIconFile, ICON_ACCEPT } from './subjectIcons.js';
 
 let state = {
   screen: 'loading',
@@ -532,19 +532,14 @@ window.createSubject = async function () {
   } catch (e) { alert(e.message); }
 };
 
-// Reads an .svg file chosen by the admin; calls done(svgText) if it's valid.
-function readSvgFile(evt, done) {
+// Reads an icon file chosen by the admin; calls done(value) if it's usable.
+async function readSvgFile(evt, done) {
   const file = evt.target.files && evt.target.files[0];
   evt.target.value = ''; // let the same file be picked again later
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = String(reader.result || '');
-    const problem = validateSvgUpload(text);
-    if (problem) { alert(problem); return; }
-    done(text);
-  };
-  reader.readAsText(file);
+  const { value, error } = await readIconFile(file);
+  if (error) { alert(error); return; }
+  done(value);
 }
 window.pickNewSubjectIcon = function (evt) {
   const name = document.getElementById('newsubject').value;
@@ -1388,12 +1383,12 @@ function renderAdmin() {
       + '<label class="flabel">Batches</label><input id="settings_batches" value="' + esc((state.settings.batches || []).join(', ')) + '">'
       + '<button class="btn" onclick="saveSettings()">Save</button>'
       + '</div>';
-    const previewIcon = state.newSubjectIcon ? '<img class="subject-icon small" src="data:image/svg+xml;charset=utf-8,' + encodeURIComponent(state.newSubjectIcon) + '" alt="">' : '';
+    const previewIcon = state.newSubjectIcon ? subjectIcon({ name: '', iconSvg: state.newSubjectIcon }, 'subject-icon small') : '';
     html += '<div class="card"><h2>Subjects</h2>'
-      + '<p class="sub">Paediatrics, Surgery, Medicine, Gyn &amp; Obs and Psychiatry get a built-in icon from their name. For any other subject, or to replace one, upload an SVG icon.</p>'
+      + '<p class="sub">Paediatrics, Surgery, Medicine, Gyn &amp; Obs and Psychiatry get a built-in icon from their name. For any other subject, or to replace one, upload an icon (SVG, PNG, JPG or WebP; a round image with a transparent background looks best).</p>'
       + '<div class="row"><input id="newsubject" placeholder="e.g. Surgery" style="flex:1;"><button class="btn" onclick="createSubject()">Add</button></div>'
       + '<div class="row" style="margin-top:8px; align-items:center;">' + previewIcon
-      + '<label class="btn secondary file-btn">' + (state.newSubjectIcon ? 'Change icon' : 'Choose icon (optional .svg)') + '<input type="file" accept=".svg,image/svg+xml" onchange="pickNewSubjectIcon(event)"></label>'
+      + '<label class="btn secondary file-btn">' + (state.newSubjectIcon ? 'Change icon' : 'Choose icon (optional)') + '<input type="file" accept="' + ICON_ACCEPT + '" onchange="pickNewSubjectIcon(event)"></label>'
       + (state.newSubjectIcon ? '<span class="link-a" onclick="clearNewSubjectIcon()">Remove</span>' : '')
       + '</div>'
       + (state.subjects.length ? '<div style="margin-top:14px;">' + state.subjects.map(s =>
@@ -1401,7 +1396,7 @@ function renderAdmin() {
           + '<div class="row" style="align-items:center; min-width:0;">' + subjectIcon(s, 'subject-icon small')
           + '<span style="font-size:14px;">' + esc(s.name) + '</span></div>'
           + '<div class="row" style="flex-shrink:0; justify-content:flex-end; flex-wrap:wrap;">'
-          + '<label class="btn secondary file-btn">' + (s.iconSvg ? 'Replace icon' : 'Upload icon') + '<input type="file" accept=".svg,image/svg+xml" onchange="uploadSubjectIcon(event, \'' + s.id + '\')"></label>'
+          + '<label class="btn secondary file-btn">' + (s.iconSvg ? 'Replace icon' : 'Upload icon') + '<input type="file" accept="' + ICON_ACCEPT + '" onchange="uploadSubjectIcon(event, \'' + s.id + '\')"></label>'
           + (s.iconSvg ? '<button class="btn secondary" onclick="removeSubjectIcon(\'' + s.id + '\')">Remove icon</button>' : '')
           + '<button class="btn danger" onclick="deleteSubjectConfirm(\'' + s.id + '\',\'' + esc(s.name).replace(/'/g, "\\'") + '\')">Delete</button>'
           + '</div></div>'
