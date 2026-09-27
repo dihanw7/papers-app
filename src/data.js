@@ -85,16 +85,7 @@ export async function fetchPapers(subjectId) {
     .order('created_at', { ascending: false });
   if (error) throw error;
   if (papers.length === 0) return [];
-  const paperIds = papers.map((p) => p.id);
-  const { data: qs, error: qErr } = await supabase
-    .from('questions')
-    .select('id, paper_id, group_id')
-    .in('paper_id', paperIds);
-  if (qErr) throw qErr;
-  // Count MTF groups as one question each, matching how they're shown to students.
-  const screenSets = {};
-  paperIds.forEach((id) => { screenSets[id] = new Set(); });
-  qs.forEach((q) => { screenSets[q.paper_id].add(q.group_id || q.id); });
+  const counts = await fetchQuestionCounts(papers.map((p) => p.id));
   return papers.map((p) => ({
     id: p.id,
     name: p.name,
@@ -104,8 +95,31 @@ export async function fetchPapers(subjectId) {
     opensAt: p.opens_at,
     closesAt: p.closes_at,
     isOpen: p.is_open,
-    questionCount: screenSets[p.id] ? screenSets[p.id].size : 0,
+    questionCount: counts[p.id] || 0,
   }));
+}
+
+// { paperId: count }, with MTF groups counted as one question each, matching how
+// they're shown to students. Uses the paper_question_counts() database function
+// so counts show even for locked papers whose questions students can't read.
+export async function fetchQuestionCounts(paperIds) {
+  const counts = {};
+  if (!paperIds.length) return counts;
+  const { data, error } = await supabase.rpc('paper_question_counts', { paper_ids: paperIds });
+  if (!error) {
+    data.forEach((r) => { counts[r.paper_id] = r.question_count; });
+    return counts;
+  }
+  // Fallback until migration_08 has been run: count the questions directly.
+  const { data: qs, error: qErr } = await supabase
+    .from('questions')
+    .select('id, paper_id, group_id')
+    .in('paper_id', paperIds);
+  if (qErr) throw qErr;
+  const sets = {};
+  qs.forEach((q) => { (sets[q.paper_id] ||= new Set()).add(q.group_id || q.id); });
+  Object.keys(sets).forEach((id) => { counts[id] = sets[id].size; });
+  return counts;
 }
 
 export async function fetchAllPapers() {
