@@ -255,3 +255,4 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .start-rules{max-width:360px; margin:0 auto 20px; padding:0 0 0 18px; text-align:left; color:var(--text2); font-size:14px; line-height:1.5;}
 .start-rules li{margin-bottom:4px;}
 .start-btn{min-width:200px; font-size:16px;}
+.reset-student{display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-top:16px; padding-top:14px; border-top:1px solid var(--border);}

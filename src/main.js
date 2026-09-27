@@ -222,9 +222,17 @@ async function finalizeSubmit(timedOut) {
       answers: state.attemptAnswers, score: totalPoints, total: totalPossible,
     });
   } catch (e) {
-    // Network blip / server busy: keep everything, tell the student, retry.
     submitInFlight = false;
     state.busy = false;
+    if (/was reset|not been started/i.test(e.message || '')) {
+      // An admin reset this attempt while it was open. Nothing to retry:
+      // send them back so reopening the paper starts a fresh attempt.
+      alert('Your attempt at this paper was reset by an admin, so these answers could not be submitted. Open the paper again to start afresh.');
+      state.answersLocked = false;
+      await window.goto('papers');
+      return;
+    }
+    // Network blip / server busy: keep everything, tell the student, retry.
     try { await db.saveDraft(paperId, state.currentUser.id, state.attemptAnswers); } catch (e2) { /* offline too */ }
     if (timedOut) {
       state.submitError = 'Time is up. Submitting your answers failed (connection problem) — retrying automatically. Please keep this page open.';
@@ -368,6 +376,7 @@ window.setAuthMode = function (m) { state.authMode = m; state.errorMsg = ''; ren
 // ---------- NAV ----------
 window.goto = async function (screen) {
   state.errorMsg = '';
+  if (screen === 'analytics' || screen === 'admin') analyticsCache = null; // show fresh results
   if (screen === 'home') { state.subjects = await db.fetchSubjects(); }
   state.screen = screen;
   render();
@@ -528,7 +537,7 @@ async function buildReview(paperId, attempt) {
 }
 
 // ---------- ADMIN: subjects / papers ----------
-window.setAdminTab = function (t) { state.adminTab = t; if (t === 'members') state.members = null; render(); };
+window.setAdminTab = function (t) { state.adminTab = t; if (t === 'members') state.members = null; if (t === 'analytics') analyticsCache = null; render(); };
 
 window.saveSettings = async function () {
   const groups = document.getElementById('settings_groups').value.split(',').map(s => s.trim()).filter(Boolean);
@@ -819,7 +828,7 @@ window.setAnalyticsSubject = async function (subjId) {
   state.papers = subjId ? await db.fetchPapers(subjId) : [];
   render();
 };
-window.setAnalyticsPaper = async function (paperId) { state.analyticsPaper = paperId; state.analyticsExpandedQ = null; state.analyticsViewingAttempt = null; state.analyticsTypeFilter = 'all'; render(); };
+window.setAnalyticsPaper = async function (paperId) { analyticsCache = null; state.analyticsPaper = paperId; state.analyticsExpandedQ = null; state.analyticsViewingAttempt = null; state.analyticsTypeFilter = 'all'; render(); };
 window.toggleQuestionDetail = function (qid) {
   state.analyticsExpandedQ = state.analyticsExpandedQ === qid ? null : qid;
   render();
@@ -1242,6 +1251,43 @@ function renderAnalyticsPaperSelect() {
     + state.papers.map(p => '<option value="' + p.id + '" ' + (state.analyticsPaper === p.id ? 'selected' : '') + '>' + esc(p.name) + '</option>').join('')
     + '</select>';
 }
+function renderInProgressCard(list) {
+  const rows = list || [];
+  let html = '<div class="card"><h2>In progress</h2><p class="sub">Started but not submitted yet.'
+    + (rows.length ? ' Reset someone to clear their answers and timer so they can start again.' : '') + '</p>';
+  if (rows.length === 0) return html + '<p class="sub" style="margin:0;">No one is part-way through this paper.</p></div>';
+  html += rows.map(d => '<div class="member-row"><div class="member-main"><div style="min-width:0;">'
+    + '<div style="font-weight:600; font-size:14px;">' + esc(d.name || '(no name)') + '</div>'
+    + '<div class="member-sub">' + esc([d.medNo, d.group ? 'Group ' + d.group : ''].filter(Boolean).join(' · ')) + '</div>'
+    + '<div class="member-sub">Started ' + esc(fmtWhen(d.startedAt)) + ' · ' + d.answered + ' answered · last saved ' + esc(fmtWhen(d.updatedAt)) + '</div>'
+    + '</div><div class="row" style="flex-shrink:0;"><button class="btn secondary" onclick="resetStudentAttemptConfirm(\'' + d.userId + '\')">Reset</button></div>'
+    + '</div></div>').join('');
+  return html + '</div>';
+}
+
+window.resetStudentAttemptConfirm = async function (userId) {
+  const paper = analyticsCache && analyticsCache.paper;
+  if (!paper) return;
+  const a = analyticsCache.all.find(x => x.userId === userId);
+  const d = !a && (analyticsCache.inProgress || []).find(x => x.userId === userId);
+  if (!a && !d) return;
+  const who = a || d;
+  const what = a
+    ? 'Their submission (' + a.score + ' / ' + a.total + ') and answers will be permanently deleted'
+    : 'Their unfinished attempt (' + d.answered + ' answered so far) and their timer will be cleared. If they have the paper open right now, they will lose those answers';
+  if (!confirm('Reset ' + who.name + ' (' + who.medNo + ') on "' + paper.name + '"?\n\n'
+    + what + ', and they can take the paper again from the start'
+    + (paper.timeLimitMinutes ? ' with a fresh ' + paper.timeLimitMinutes + '-minute timer' : '')
+    + ' while it is open. Everyone else\'s results are kept.\n\nThis cannot be undone.')) return;
+  try {
+    await db.resetStudentAttempt(paper.id, userId);
+    analyticsCache = null;
+    state.analyticsViewingAttempt = null;
+    alert(who.name + '\'s attempt has been reset.');
+    render();
+  } catch (e) { alert(e.message); }
+};
+
 window.viewStudentAttempt = function (userId) {
   state.analyticsViewingAttempt = userId;
   render();
@@ -1254,9 +1300,9 @@ window.setAnalyticsTypeFilter = function (t) {
 async function renderAnalyticsResult() {
   const resHost = document.getElementById('analyticsresult');
   if (!resHost) return;
-  let paper, all, dist;
+  let paper, all, dist, inProgress;
   if (analyticsCache && analyticsCache.paperId === state.analyticsPaper) {
-    ({ paper, all, dist } = analyticsCache);
+    ({ paper, all, dist, inProgress } = analyticsCache);
   } else {
     resHost.innerHTML = 'Loading…';
     paper = await db.fetchPaperWithQuestions(state.analyticsPaper);
@@ -1264,15 +1310,21 @@ async function renderAnalyticsResult() {
     dist = {};
     paper.questions.forEach(q => { dist[q.id] = {}; q.options.forEach(o => dist[q.id][o.key] = 0); });
     all.forEach(a => { paper.questions.forEach(q => { const ans = a.answers[q.id]; if (ans && dist[q.id][ans] !== undefined) dist[q.id][ans]++; }); });
-    analyticsCache = { paperId: state.analyticsPaper, paper, all, dist };
+    // Admins also see who has started but not submitted.
+    inProgress = [];
+    if (state.currentUser.role === 'admin') {
+      try { inProgress = await db.fetchInProgress(state.analyticsPaper); } catch (e) { inProgress = []; }
+    }
+    analyticsCache = { paperId: state.analyticsPaper, paper, all, dist, inProgress };
   }
   const isAdmin = state.currentUser.role === 'admin';
+  const inProgressCard = isAdmin ? renderInProgressCard(inProgress) : '';
   if (!isAdmin && (paper.questions.length === 0 || !paper.answersRevealed)) {
     resHost.innerHTML = '<div class="empty"><div class="dot"></div>Results for this paper will be available once it has closed'
       + (paper.questions.length === 0 ? ', for papers you have taken' : '') + '.</div>';
     return;
   }
-  if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>'; return; }
+  if (all.length === 0) { resHost.innerHTML = '<div class="empty"><div class="dot"></div>No one has completed this paper yet.</div>' + inProgressCard; return; }
 
   // ---- Individual student attempt viewer (admin only) ----
   if (isAdmin && state.analyticsViewingAttempt) {
@@ -1289,7 +1341,10 @@ async function renderAnalyticsResult() {
         + '<div class="flex-between" style="margin-top:14px;">'
         + '<span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span>'
         + '<span style="font-weight:600;">' + a.score + ' / ' + a.total + ' (' + pct + '%)</span>'
-        + '</div></div>';
+        + '</div>'
+        + '<div class="reset-student"><button class="btn secondary" onclick="resetStudentAttemptConfirm(\'' + a.userId + '\')">Reset this student\'s attempt</button>'
+        + '<span class="sub" style="margin:0; font-size:13px;">Deletes their submission so they can take this paper again.</span></div>'
+        + '</div>';
       html += renderAttemptBody(screens, a, dist, all.length);
       resHost.innerHTML = html;
       return;
@@ -1307,6 +1362,7 @@ async function renderAnalyticsResult() {
     html += '<tr' + clickAttr + '><td>' + (idx + 1) + '</td><td>' + nameShown + '</td><td>' + esc(a.group) + '</td><td>' + a.score + '/' + a.total + ' (' + pct + '%)</td><td><span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span></td></tr>';
   });
   html += '</tbody></table></div>';
+  html += inProgressCard;
 
   // ---- Question difficulty, filterable by type ----
   const screens = groupConsecutive(paper.questions);
