@@ -445,3 +445,9 @@ export async function resetPaper(paperId) {
   if (error) throw error;
   return { submitted: data.submitted, inProgress: data.in_progress };
 }
+
+// Deletes one student's submission and draft for a paper so they can retake it.
+export async function resetStudentAttempt(paperId, userId) {
+  const { error } = await supabase.rpc('admin_reset_attempt', { pid: paperId, uid: userId });
+  if (error) throw error;
+}

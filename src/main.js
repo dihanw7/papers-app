@@ -1242,6 +1242,23 @@ function renderAnalyticsPaperSelect() {
     + state.papers.map(p => '<option value="' + p.id + '" ' + (state.analyticsPaper === p.id ? 'selected' : '') + '>' + esc(p.name) + '</option>').join('')
     + '</select>';
 }
+window.resetStudentAttemptConfirm = async function (userId) {
+  const a = analyticsCache && analyticsCache.all.find(x => x.userId === userId);
+  const paper = analyticsCache && analyticsCache.paper;
+  if (!a || !paper) return;
+  if (!confirm('Reset ' + a.name + ' (' + a.medNo + ') on "' + paper.name + '"?\n\n'
+    + 'Their submission (' + a.score + ' / ' + a.total + ') and answers will be permanently deleted, and they can take the paper again from the start'
+    + (paper.timeLimitMinutes ? ' with a fresh ' + paper.timeLimitMinutes + '-minute timer' : '')
+    + ' while it is open. Everyone else\'s results are kept.\n\nThis cannot be undone.')) return;
+  try {
+    await db.resetStudentAttempt(paper.id, userId);
+    analyticsCache = null;
+    state.analyticsViewingAttempt = null;
+    alert(a.name + '\'s attempt has been reset.');
+    render();
+  } catch (e) { alert(e.message); }
+};
+
 window.viewStudentAttempt = function (userId) {
   state.analyticsViewingAttempt = userId;
   render();
@@ -1289,7 +1306,10 @@ async function renderAnalyticsResult() {
         + '<div class="flex-between" style="margin-top:14px;">'
         + '<span class="pill ' + (passed ? 'pass' : 'fail') + '">' + (passed ? 'Pass' : 'Fail') + '</span>'
         + '<span style="font-weight:600;">' + a.score + ' / ' + a.total + ' (' + pct + '%)</span>'
-        + '</div></div>';
+        + '</div>'
+        + '<div class="reset-student"><button class="btn secondary" onclick="resetStudentAttemptConfirm(\'' + a.userId + '\')">Reset this student\'s attempt</button>'
+        + '<span class="sub" style="margin:0; font-size:13px;">Deletes their submission so they can take this paper again.</span></div>'
+        + '</div>';
       html += renderAttemptBody(screens, a, dist, all.length);
       resHost.innerHTML = html;
       return;
