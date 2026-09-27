@@ -59,7 +59,7 @@ create policy attempts_insert_own on public.attempts for insert
 -- Returns counts only, never question content. MTF groups count as one question.
 create or replace function public.paper_question_counts(paper_ids uuid[])
 returns table (paper_id uuid, question_count int) as $$
-  select q.paper_id, count(distinct coalesce(q.group_id, q.id))::int
+  select q.paper_id, count(distinct coalesce(q.group_id::text, q.id::text))::int
   from public.questions q
   where q.paper_id = any(paper_ids)
   group by q.paper_id;
