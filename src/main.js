@@ -375,6 +375,11 @@ window.openPaper = async function (paperId) {
   const existingAttempt = await db.fetchMyAttempt(paperId, state.currentUser.id);
   const status = paperStatus(paper);
   const draft = (!existingAttempt && status.kind !== 'upcoming') ? await db.fetchDraft(paperId, state.currentUser.id) : null;
+  if (!existingAttempt && !status.open) {
+    // Students can't read a locked paper's questions, so count them separately.
+    const listed = state.papers.find((p) => p.id === paperId);
+    paper.questionCount = listed ? listed.questionCount : ((await db.fetchQuestionCounts([paperId]))[paperId] || 0);
+  }
   state.busy = false;
   state.lockedKind = status.open ? '' : status.kind;
   if (existingAttempt) {
@@ -796,9 +801,13 @@ function renderPaperLocked() {
     + '<div class="lock-bubble">' + lockIcon(44) + '</div>'
     + '<div class="lock-title">' + title + '</div>'
     + '<p class="lock-msg">' + esc(state.lockedMessage) + '</p>';
-  if (state.lockedKind === 'upcoming' && p.closesAt) {
-    html += '<p class="lock-msg small">Open until ' + esc(fmtWhen(p.closesAt)) + '.</p>';
-  }
+  const facts = [];
+  if (state.selectedSubject) facts.push(['Subject', state.selectedSubject.name]);
+  facts.push(['Questions', String(p.questionCount ?? p.questions.length)]);
+  facts.push(['Time allowed', p.timeLimitMinutes ? p.timeLimitMinutes + ' min' : 'No time limit']);
+  if (p.opensAt) facts.push([state.lockedKind === 'upcoming' ? 'Opens' : 'Opened', fmtWhen(p.opensAt)]);
+  if (p.closesAt) facts.push([state.lockedKind === 'closed' ? 'Closed' : 'Closes', fmtWhen(p.closesAt)]);
+  html += '<dl class="lock-facts">' + facts.map(([k, v]) => '<div><dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd></div>').join('') + '</dl>';
   if (isAdmin && state.lockedKind === 'locked') {
     html += '<button class="btn" style="margin-top:6px;" onclick="togglePaperOpen(\'' + p.id + '\', true)">Unlock for students</button>';
   } else if (isAdmin && state.lockedKind !== 'locked') {

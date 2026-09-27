@@ -205,6 +205,11 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .lock-title{font-size:21px; font-weight:600; margin-bottom:6px;}
 .lock-msg{color:var(--text2); font-size:15px; line-height:1.5; max-width:430px; margin:0 auto 14px;}
 .lock-msg.small{font-size:13px;}
+.lock-facts{max-width:360px; margin:4px auto 18px; padding:4px 16px; border:1px solid var(--border); border-radius:12px; background:var(--surface); text-align:left;}
+.lock-facts div{display:flex; justify-content:space-between; gap:16px; padding:9px 0; border-bottom:1px solid var(--border); font-size:14px;}
+.lock-facts div:last-child{border-bottom:none;}
+.lock-facts dt{color:var(--text2);}
+.lock-facts dd{margin:0; font-weight:600; text-align:right;}
 .admin-paper-row{display:flex; justify-content:space-between; align-items:center; gap:14px; padding:12px 0; border-bottom:1px solid #ececef;}
 @keyframes lock-jiggle{0%,100%{transform:rotate(0)} 25%{transform:rotate(-9deg)} 60%{transform:rotate(7deg)} 85%{transform:rotate(-3deg)}}
 @media (prefers-reduced-motion: reduce){ .lock-svg{animation:none !important;} }
