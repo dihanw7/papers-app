@@ -242,3 +242,11 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .file-btn{position:relative; overflow:hidden; cursor:pointer;}
 .file-btn input[type=file]{position:absolute; inset:0; opacity:0; cursor:pointer;}
 @media (max-width: 560px){ .subject-admin-row{flex-direction:column; align-items:stretch;} .subject-admin-row .row{justify-content:flex-start !important;} }
+/* Subject tiles: compact, centred cards; at least two per row on phones,
+   more as the screen widens, with the icon scaling to the tile. */
+.subject-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px;}
+.subject-grid .tile{display:flex; flex-direction:column; align-items:center; text-align:center; padding:18px 12px 16px;}
+.subject-grid .tile .subject-icon{width:72%; max-width:140px; height:auto; aspect-ratio:1; margin:0 0 12px;}
+.subject-grid .tile .swatch{width:72%; max-width:140px; height:auto; aspect-ratio:1; border-radius:50%; font-size:34px; margin:0 0 12px;}
+.subject-grid .tile .t{font-size:16px; line-height:1.25;}
+@media (max-width:360px){ .subject-grid{grid-template-columns:repeat(2,1fr); gap:10px;} }
