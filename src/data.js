@@ -451,3 +451,18 @@ export async function resetStudentAttempt(paperId, userId) {
   const { error } = await supabase.rpc('admin_reset_attempt', { pid: paperId, uid: userId });
   if (error) throw error;
 }
+
+// Students who started this paper but haven't submitted (admin only).
+export async function fetchInProgress(paperId) {
+  const { data, error } = await supabase.rpc('admin_in_progress', { pid: paperId });
+  if (error) throw error;
+  return data.map((d) => ({
+    userId: d.user_id,
+    name: d.name,
+    medNo: d.med_no,
+    group: d.group,
+    startedAt: d.started_at,
+    updatedAt: d.updated_at,
+    answered: d.answered,
+  }));
+}
