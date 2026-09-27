@@ -847,8 +847,10 @@ function render() {
   if (state.screen === 'admin' && state.adminTab === 'members') { renderMembersDeferred(); }
 }
 
+const COPYRIGHT = '&copy; ' + new Date().getFullYear() + ' DW';
+
 function renderFooter() {
-  return '<div class="footer-note">Signed in as ' + esc(state.currentUser ? state.currentUser.name : '') + '</div>';
+  return '<div class="footer-note">Signed in as ' + esc(state.currentUser ? state.currentUser.name : '') + '<div class="copyright">' + COPYRIGHT + '</div></div>';
 }
 
 const ICONS = {
@@ -971,6 +973,7 @@ function renderAuth() {
     + (state.errorMsg ? '<div class="err">' + esc(state.errorMsg) + '</div>' : '')
     + (isLogin ? renderLoginForm() : renderSignupForm())
     + '</div>'
+    + '<div class="copyright" style="text-align:center;">' + COPYRIGHT + '</div>'
     + '</div></div>';
 }
 function renderLoginForm() {
