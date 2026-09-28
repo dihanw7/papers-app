@@ -257,3 +257,5 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .start-btn{min-width:200px; font-size:16px;}
 .reset-student{display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-top:16px; padding-top:14px; border-top:1px solid var(--border);}
 .copyright{font-size:12px; color:var(--text2); opacity:.8; margin-top:4px; letter-spacing:.02em;}
+.icon-btn svg{width:20px; height:20px; flex-shrink:0;}
+.logout-btn{gap:6px; padding:7px 10px; font-size:14px; font-weight:500; color:var(--text2); border:1px solid var(--border); border-radius:980px; background:var(--card);}
