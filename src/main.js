@@ -4,6 +4,7 @@ import { subjectIconSrc, readIconFile, ICON_ACCEPT } from './subjectIcons.js';
 let state = {
   screen: 'loading',
   authMode: 'login',
+  signupKind: 'student', // student | staff (academic staff skip group and batch)
   currentUser: null, // { id, name, group, medNo, role }
   subjects: [],
   selectedSubject: null,
@@ -314,13 +315,24 @@ async function boot() {
 boot();
 
 // ---------- AUTH ----------
+// Switches the sign-up form between student and academic staff without
+// re-rendering, so anything already typed stays put.
+window.setSignupKind = function (kind) {
+  state.signupKind = kind;
+  document.querySelectorAll('.kind-btn').forEach(b => b.classList.toggle('selected', b.dataset.kind === kind));
+  const fields = document.getElementById('su_student_fields');
+  if (fields) fields.hidden = kind === 'staff';
+};
+
 window.doSignup = async function () {
+  const staff = state.signupKind === 'staff';
   const name = document.getElementById('su_name').value.trim();
-  const group = document.getElementById('su_group').value;
-  const batch = document.getElementById('su_batch').value;
+  // Academic staff don't belong to a group or batch.
+  const group = staff ? STAFF_GROUP : document.getElementById('su_group').value;
+  const batch = staff ? '' : document.getElementById('su_batch').value;
   const med = document.getElementById('su_med').value.trim().toUpperCase();
   const pass = document.getElementById('su_pass').value;
-  if (!name || !group || !batch || !med || !pass) { state.errorMsg = 'Please fill in every field.'; render(); return; }
+  if (!name || !group || (!staff && !batch) || !med || !pass) { state.errorMsg = 'Please fill in every field.'; render(); return; }
   if (pass.length < 6) { state.errorMsg = 'Password must be at least 6 characters.'; render(); return; }
   state.busy = true; state.errorMsg = ''; render();
   try {
@@ -850,6 +862,9 @@ function render() {
   if (state.screen === 'admin' && state.adminTab === 'members') { renderMembersDeferred(); }
 }
 
+// Stored as the "group" of academic staff accounts.
+const STAFF_GROUP = 'Academic staff';
+
 const COPYRIGHT = '&copy; ' + new Date().getFullYear() + ' DW';
 
 function renderFooter() {
@@ -987,9 +1002,14 @@ function renderLoginForm() {
 function renderSignupForm() {
   const groups = state.settings.groups.length ? state.settings.groups : ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
   const batches = state.settings.batches.length ? state.settings.batches : ['30', '31', '32', '33', '34'];
-  return '<label class="flabel">Name</label><input id="su_name" placeholder="e.g. Saman">'
+  const staff = state.signupKind === 'staff';
+  const kindBtn = (k, label) => '<button type="button" class="kind-btn' + (state.signupKind === k ? ' selected' : '') + '" data-kind="' + k + '" onclick="setSignupKind(\'' + k + '\')">' + label + '</button>';
+  return '<label class="flabel">I am</label><div class="kind-toggle">' + kindBtn('student', 'A student') + kindBtn('staff', 'Academic staff') + '</div>'
+    + '<label class="flabel">Name</label><input id="su_name" placeholder="e.g. Saman">'
+    + '<div id="su_student_fields"' + (staff ? ' hidden' : '') + '>'
     + '<label class="flabel">Group</label><select id="su_group">' + groups.map(g => '<option value="' + esc(g) + '">' + esc(g) + '</option>').join('') + '</select>'
     + '<label class="flabel">Batch</label><select id="su_batch">' + batches.map(b => '<option value="' + esc(b) + '">' + esc(b) + '</option>').join('') + '</select>'
+    + '</div>'
     + '<label class="flabel">MED number</label><input id="su_med" placeholder="e.g. 4892" autocapitalize="characters">'
     + '<label class="flabel">Set a password</label><input id="su_pass" type="password" placeholder="At least 6 characters">'
     + '<button class="btn block" onclick="doSignup()" ' + (state.busy ? 'disabled' : '') + '>' + (state.busy ? 'Creating account…' : 'Create account') + '</button>';
@@ -1586,7 +1606,7 @@ async function renderMembersDeferred(forceReload) {
 function renderMemberRow(m) {
   const isMe = m.id === state.currentUser.id;
   const editing = state.memberEditing === m.id;
-  const details = [m.medNo, m.group ? 'Group ' + m.group : '', m.batch ? 'Batch ' + m.batch : ''].filter(Boolean).join(' · ');
+  const details = [m.medNo, m.group ? (m.group === STAFF_GROUP ? STAFF_GROUP : 'Group ' + m.group) : '', m.batch ? 'Batch ' + m.batch : ''].filter(Boolean).join(' · ');
   let html = '<div class="member-row">'
     + '<div class="member-main"><div style="min-width:0;">'
     + '<div style="font-weight:600; font-size:14px;">' + esc(m.name || '(no name)') + (isMe ? ' (you)' : '')
@@ -1605,7 +1625,7 @@ function renderMemberRow(m) {
     };
     html += '<div class="member-edit">'
       + '<label class="flabel">Name</label><input id="me_name" value="' + esc(m.name) + '">'
-      + '<div class="row"><div style="flex:1;"><label class="flabel">Group</label><select id="me_group">' + opts(state.settings.groups || [], m.group) + '</select></div>'
+      + '<div class="row"><div style="flex:1;"><label class="flabel">Group</label><select id="me_group">' + opts([...(state.settings.groups || []), STAFF_GROUP], m.group) + '</select></div>'
       + '<div style="flex:1;"><label class="flabel">Batch</label><select id="me_batch">' + opts(state.settings.batches || [], m.batch) + '</select></div></div>'
       + '<label class="flabel">Role</label><select id="me_role"' + (isMe ? ' disabled' : '') + '>'
       + '<option value="student"' + (m.role === 'student' ? ' selected' : '') + '>Student</option>'
@@ -1627,7 +1647,8 @@ window.saveMember = async function (id) {
   const m = state.members.find(x => x.id === id);
   if (m && role !== m.role && !confirm(role === 'admin' ? 'Make ' + m.name + ' an admin? They will be able to edit and delete papers and manage members.' : 'Remove admin access from ' + m.name + '?')) return;
   try {
-    await db.updateMember(id, { name: val('me_name'), group: val('me_group'), batch: val('me_batch'), role });
+    const group = val('me_group');
+    await db.updateMember(id, { name: val('me_name'), group, batch: group === STAFF_GROUP ? '' : val('me_batch'), role });
     state.memberEditing = null;
     await renderMembersDeferred(true);
   } catch (e) { alert(e.message); }

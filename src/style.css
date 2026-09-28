@@ -259,3 +259,6 @@ textarea{width:100%; border-radius:12px; border:1px solid var(--border); backgro
 .copyright{font-size:12px; color:var(--text2); opacity:.8; margin-top:4px; letter-spacing:.02em;}
 .icon-btn svg{width:20px; height:20px; flex-shrink:0;}
 .logout-btn{gap:6px; padding:7px 10px; font-size:14px; font-weight:500; color:var(--text2); border:1px solid var(--border); border-radius:980px; background:var(--card);}
+.kind-toggle{display:flex; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:3px; gap:3px; margin-bottom:4px;}
+.kind-btn{flex:1; border:none; background:transparent; padding:9px 10px; border-radius:9px; font-size:14px; font-weight:600; color:var(--text2); cursor:pointer; font-family:inherit;}
+.kind-btn.selected{background:var(--card); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,0.12);}
