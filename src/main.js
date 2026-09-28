@@ -366,6 +366,9 @@ window.doLogin = async function () {
 };
 
 window.doLogout = async function () {
+  if (state.screen === 'take' && !confirm('Log out in the middle of this paper? Your answers so far are saved, but your timer keeps running while you are logged out.')) return;
+  clearCountdown();
+  clearTimeout(draftSaveTimeout);
   await db.logOut();
   state.currentUser = null; state.screen = 'auth'; state.authMode = 'login'; state.errorMsg = '';
   render();
@@ -870,10 +873,10 @@ function renderNav() {
     + '<div class="links nav-desktop-links">'
     + tabs.map(t => '<button class="linkbtn ' + (state.screen === t[0] ? 'active' : '') + '" onclick="goto(\'' + t[0] + '\')">' + t[1] + '</button>').join('')
     + '<span class="who">' + esc(u.name) + ' · ' + esc(u.medNo) + '</span>'
-    + '<button class="linkbtn" onclick="doLogout()">Sign out</button>'
+    + '<button class="linkbtn" onclick="doLogout()">Log out</button>'
     + '</div>'
     + '<div class="nav-mobile-actions">'
-    + '<button class="icon-btn" onclick="doLogout()" aria-label="Sign out">' + ICONS.signout + '</button>'
+    + '<button class="icon-btn logout-btn" onclick="doLogout()">' + ICONS.signout + '<span>Log out</span></button>'
     + '</div>'
     + '</div>'
     + '<nav class="bottom-tabbar">'
