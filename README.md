@@ -131,3 +131,26 @@ Worth knowing before you roll it out widely:
   identified by name (current default for admins; students only see their own name and
   "Student N" for others) — if you'd rather everyone stay anonymous to each other,
   that's a small change to the analytics rendering.
+
+## Code layout
+
+```
+src/
+  main.js            entry point: loads the screens and starts the app
+  state.js           the single app state object (plus small caches)
+  render.js          redraws the page from state
+  data/              every Supabase call, one file per area
+    index.js           re-exports everything (import * as db from './data/index.js')
+    auth.js  settings.js  subjects.js  papers.js  attempts.js  members.js
+  screens/           one file per screen: its actions and its HTML
+    auth.js  subjects.js  take.js  review.js  analytics.js
+    admin.js  members.js  paperEditor.js
+  ui/components.js   shared markup: icons, nav bar, footer, subject tiles
+  lib/helpers.js     small helpers (escaping, dates, paper status, ids)
+  lib/scoring.js     client-side marking
+  subjectIcons.js    built-in and uploaded subject icons
+  supabaseClient.js  Supabase connection (reads VITE_SUPABASE_* from .env)
+```
+
+Buttons call global functions through inline `onclick="..."` attributes; each
+screen file registers its handlers on `window` when it loads.
